@@ -1,0 +1,55 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "连接云枢",
+        "description": "选择配对方式后点 **提交**。",
+        "data": {
+          "cloud_url": "云枢云端 URL",
+          "bind_mode": "配对方式",
+          "phone": "客户手机号（可选）",
+          "activation_code": "云端激活码（服务商出示码）"
+        }
+      },
+      "activation": {
+        "title": "设备码（待云枢认领）",
+        "description": "**设备码**：`{user_code}`\n\n**有效期**：{expires_minutes}\n\n{claim_status}",
+        "data": {
+          "activation_qr": "扫码认领",
+          "activation_code": "设备码（8 位，可复制）"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "无法连接云枢云端",
+      "required": "请填写云端激活码"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "UDHUB Agent",
+        "description": "主机 **{gateway_id}** · 设备码 **{user_code}**\n\n{claim_status}",
+        "data": {
+          "activation_qr": "扫码认领",
+          "activation_code": "设备码（8 位，可复制）",
+          "action": "绑定云端出示码"
+        }
+      },
+      "rebind": {
+        "title": "绑定云端激活码",
+        "description": "{hint}",
+        "data": {
+          "cloud_url": "云枢云端 URL",
+          "activation_code": "云端激活码"
+        }
+      }
+    },
+    "error": {
+      "no_label": "暂无设备码，请使用「输入云端激活码」绑定",
+      "cannot_connect": "无法连接云枢云端",
+      "invalid_code": "激活码无效或不存在",
+      "required": "请填写云端激活码"
+    }
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "domain": "udhub_agent",
+  "name": "UDHUB Agent",
+  "codeowners": [
+    "@udhub"
+  ],
+  "config_flow": true,
+  "documentation": "https://github.com/udhubs/ha_hub_agent",
+  "integration_type": "service",
+  "iot_class": "cloud_push",
+  "issue_tracker": "https://github.com/udhubs/ha_hub_agent/issues",
+  "homeassistant": "2026.9.0",
+  "requirements": [
+    "aiohttp>=3.9.0"
+  ],
+  "version": "0.4.43",
+  "single_config_entry": true
+}

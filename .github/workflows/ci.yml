@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate manifest.json
+        run: |
+          python3 - <<'PY'
+          import json, sys
+          from pathlib import Path
+          m = json.loads(Path("custom_components/udhub_agent/manifest.json").read_text())
+          required = ["domain", "name", "version", "config_flow", "iot_class", "documentation"]
+          missing = [k for k in required if k not in m]
+          if missing:
+              print("missing keys:", missing)
+              sys.exit(1)
+          if m["domain"] != "udhub_agent":
+              print("domain mismatch", m["domain"])
+              sys.exit(1)
+          if m["iot_class"] not in {
+              "assumed_state", "cloud_polling", "cloud_push",
+              "local_polling", "local_push", "calculated",
+          }:
+              print("invalid iot_class", m["iot_class"])
+              sys.exit(1)
+          print("manifest ok", m["version"])
+          PY
+      - name: Validate hacs.json
+        run: |
+          python3 -c "import json; json.load(open('hacs.json')); print('hacs.json ok')"
+      - name: install.sh syntax
+        run: bash -n install.sh

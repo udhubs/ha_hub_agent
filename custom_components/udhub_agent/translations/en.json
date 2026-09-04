@@ -1,0 +1,77 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to UDHUB Cloud",
+        "description": "Choose pairing mode and submit.",
+        "data": {
+          "cloud_url": "Cloud URL",
+          "bind_mode": "Pairing mode",
+          "phone": "Customer phone (optional)",
+          "activation_code": "Cloud activation code (rebind)"
+        }
+      },
+      "activation": {
+        "title": "Device code (pending claim)",
+        "description": "Device code: `{user_code}`\n\nValid for ~{expires_minutes} minutes.\n\n{claim_status}",
+        "data": {
+          "activation_qr": "Scan to claim",
+          "activation_code": "Device code"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Cannot connect to UDHUB cloud",
+      "not_yet_claimed": "Not claimed yet",
+      "required": "Cloud activation code required"
+    },
+    "abort": {
+      "already_configured": "This host is already connected"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "UDHUB Agent",
+        "description": "Host **{gateway_id}** · code **{user_code}**",
+        "data": {
+          "action": "Action"
+        }
+      },
+      "view_label": {
+        "title": "Activation label",
+        "description": "Host **{gateway_id}** · code **{user_code}**",
+        "data": {
+          "activation_qr": "QR code",
+          "activation_code": "Device code"
+        }
+      },
+      "regenerate_label": {
+        "title": "Regenerate code",
+        "description": "Creates a new 8-digit code (~{expires_minutes} min)."
+      },
+      "regenerated_label": {
+        "title": "New label",
+        "description": "New code: {user_code}",
+        "data": {
+          "activation_qr": "QR code",
+          "activation_code": "Device code"
+        }
+      },
+      "rebind": {
+        "title": "Bind cloud activation code",
+        "description": "{hint}",
+        "data": {
+          "cloud_url": "Cloud URL",
+          "activation_code": "Cloud activation code"
+        }
+      }
+    },
+    "error": {
+      "no_label": "No label data — use cloud code bind",
+      "cannot_connect": "Cannot connect to UDHUB cloud",
+      "invalid_code": "Invalid or unknown activation code",
+      "required": "Cloud activation code required"
+    }
+  }
+}

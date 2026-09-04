@@ -1,0 +1,3 @@
+# UDHUB Agent services
+# All operations are initiated from the UDHUB cloud console and delivered
+# through the WebSocket channel. No public services exposed at this time.
