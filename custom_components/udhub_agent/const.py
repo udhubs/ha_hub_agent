@@ -1,5 +1,5 @@
 DOMAIN = "udhub_agent"
-AGENT_VERSION = "0.4.43"
+AGENT_VERSION = "0.4.44"
 PROTOCOL_VERSION = "0.1"
 DEFAULT_CLOUD_URL = "https://www.udhub.com"
 CONF_CLOUD_URL = "cloud_url"

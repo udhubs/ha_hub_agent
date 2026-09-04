@@ -2,6 +2,15 @@
 
 版本号与 Git tag、`custom_components/udhub_agent/manifest.json` 的 `version` 三处必须一致。
 
+## [0.4.44] — 2026-09-04
+
+### Safety
+
+- OTA 后 **云端健康检查**（须在约 90s 内重新 `hello.ok`）
+- 失败 / 超时自动从 `udhub_agent.bak` **回滚**并重载集成
+- 写入 `udhub_agent.ota_pending.json`；HA 重启后若标记仍在则继续监视或回滚
+- 回滚成功后 HA 持久通知提示
+
 ## [0.4.43] — 2026-09-04
 
 ### Distribution

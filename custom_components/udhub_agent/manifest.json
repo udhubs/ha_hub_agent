@@ -13,6 +13,6 @@
   "requirements": [
     "aiohttp>=3.9.0"
   ],
-  "version": "0.4.43",
+  "version": "0.4.44",
   "single_config_entry": true
 }

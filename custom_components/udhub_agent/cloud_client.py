@@ -1564,11 +1564,18 @@ class UdhubCloudClient:
                         "UDHUB agent_update reload task COMPLETED"
                     )
 
+            health_timeout = float(
+                update_result.get("health_timeout_sec")
+                or payload.get("health_timeout_sec")
+                or 90
+            )
             task = asyncio.Task(
                 self_update_mod.schedule_reload_after_update(
                     self.hass,
                     self.entry,
                     target_version=str(update_result.get("version") or ""),
+                    rollback_on_failure=True,
+                    health_timeout_sec=health_timeout,
                 ),
                 context=contextvars.Context(),
             )
@@ -1576,7 +1583,11 @@ class UdhubCloudClient:
             self._reload_task = task
             result["reloading"] = True
             result["restarting"] = False
-            result["message"] = "package applied; reloading integration"
+            result["rollback_armed"] = True
+            result["message"] = (
+                "package applied; reloading integration "
+                f"(auto-rollback if cloud health fails within {int(health_timeout)}s)"
+            )
 
     async def _exec_registry_update(
         self, payload: dict[str, Any], result: dict[str, Any]
