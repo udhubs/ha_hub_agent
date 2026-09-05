@@ -23,7 +23,7 @@ custom_integrations/udhub_agent/
 
 ## 设计来源
 
-与云枢控制台一致：`web/public/favicon.svg` / 侧栏 `BrandMark`（深蓝圆角底 + 云枢青菱形描边 + 圆心）。正式发版前可用设计定稿 SVG 重导出替换。
+六边形对角开缝外框（参考分发头像稿）+ 斜体相连 **UD** 字标；色值 `#0A2342` / 浅底。源文件：`media/brand-mark.svg`。
 
 ## 状态
 
