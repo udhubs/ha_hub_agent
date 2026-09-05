@@ -1,35 +1,20 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
-  <rect width="1024" height="1024" fill="#F5F7FA"/>
-
+  <rect width="1024" height="1024" fill="#FFFFFF"/>
   <defs>
-    <!-- Outer / inner hex (pointy top) -->
     <path id="outer" d="M512 96 L860 296 L860 728 L512 928 L164 728 L164 296 Z"/>
     <path id="inner" d="M512 268 L720 388 L720 636 L512 756 L304 636 L304 388 Z"/>
     <mask id="ring">
       <use href="#outer" fill="#fff"/>
       <use href="#inner" fill="#000"/>
     </mask>
-    <!-- Diagonal gap (/) -->
     <mask id="split">
       <rect width="1024" height="1024" fill="#fff"/>
       <polygon points="70 820 150 900 954 160 874 80" fill="#000"/>
     </mask>
   </defs>
-
-  <!-- Hexagon frame with diagonal split -->
   <g mask="url(#ring)">
     <g mask="url(#split)">
-      <rect width="1024" height="1024" fill="#0A2342"/>
+      <rect width="1024" height="1024" fill="#111111"/>
     </g>
-  </g>
-
-  <!-- Connected UD monogram, slight italic -->
-  <g fill="none" stroke="#0A2342" stroke-width="52" stroke-linecap="round" stroke-linejoin="round"
-     transform="translate(512 518) skewX(-9) translate(-512 -518)">
-    <!-- U -->
-    <path d="M368 404 L368 568 Q368 628 424 628 L478 628 L478 404"/>
-    <!-- D (shared stem feel via close gap) -->
-    <path d="M534 404 L534 628"/>
-    <path d="M534 404 L612 404 Q688 404 688 516 Q688 628 612 628 L534 628"/>
   </g>
 </svg>

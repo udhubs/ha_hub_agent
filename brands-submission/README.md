@@ -23,7 +23,7 @@ custom_integrations/udhub_agent/
 
 ## 设计来源
 
-六边形对角开缝外框（参考分发头像稿）+ 斜体相连 **UD** 字标；色值 `#0A2342` / 浅底。源文件：`media/brand-mark.svg`。
+六边形对角开缝外框（白底黑标）。源文件：`media/brand-mark.svg`。
 
 ## 状态
 
