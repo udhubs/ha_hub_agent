@@ -6,9 +6,13 @@
 
 ```
 custom_integrations/udhub_agent/
-  icon.png   # 256×256，白底品牌标
-  logo.png   # 同 icon（可后续换成横版字标）
+  icon.png   # 256×256，白底品牌标（GitHub / HA brands）
+  logo.png   # 同 icon
 ```
+
+头像（GitHub 个人资料 / 社媒）：仓库根 `media/github-avatar.png`（512）与 `media/github-avatar-1024.png`。
+
+设置 GitHub 头像：打开 https://github.com/settings/profile → Profile picture → Upload → 选 `media/github-avatar-1024.png`。
 
 ## 提交流程（一次性）
 

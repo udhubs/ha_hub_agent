@@ -1,5 +1,9 @@
 # UDHUB · 云枢 Agent (`udhub_agent`)
 
+<p align="center">
+  <img src="media/github-avatar.png" width="128" height="128" alt="UDHUB Agent">
+</p>
+
 Home Assistant **custom integration** that connects a field HA host to [UDHUB 云枢](https://www.udhub.com) for project ops: status sync, controlled commands, settings surface, and audit.
 
 > Repository root **is** the install package (same layout as [XiaoMi/ha_xiaomi_home](https://github.com/XiaoMi/ha_xiaomi_home)).
