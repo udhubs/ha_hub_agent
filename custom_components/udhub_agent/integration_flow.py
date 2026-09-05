@@ -24,6 +24,118 @@ def _type_str(value: Any) -> str:
     return str(value)
 
 
+def _schema_custom_serializer(ha_custom: Any, unsupported: Any):
+    """Map bare Python types before HA's helper (Xiaomi uses ``bool`` not ``cv.boolean``)."""
+    builtin_map = {
+        bool: "boolean",
+        str: "string",
+        int: "integer",
+        float: "float",
+    }
+
+    def custom(value: Any) -> Any:
+        mapped = builtin_map.get(value) if isinstance(value, type) else None
+        if mapped is not None:
+            return {"type": mapped}
+        if ha_custom is not None:
+            try:
+                return ha_custom(value)
+            except Exception:  # noqa: BLE001
+                return unsupported
+        return unsupported
+
+    return custom
+
+
+def _manual_serialize_schema(schema: Any) -> list[Any]:
+    """Best-effort field list when neither probatio nor voluptuous_serialize is available."""
+    import voluptuous as vol
+
+    builtin_map = {
+        bool: "boolean",
+        str: "string",
+        int: "integer",
+        float: "float",
+    }
+    raw = getattr(schema, "schema", schema)
+    if not isinstance(raw, dict):
+        return []
+    out: list[Any] = []
+    for key, value in raw.items():
+        name = getattr(key, "schema", key)
+        if not isinstance(name, str):
+            name = str(name)
+        required = isinstance(key, vol.Required)
+        optional = isinstance(key, vol.Optional)
+        field: dict[str, Any] = {
+            "name": name,
+            "required": required and not optional,
+        }
+        if optional:
+            field["optional"] = True
+        default = getattr(key, "default", vol.UNDEFINED)
+        if default is not vol.UNDEFINED and not callable(default):
+            field["default"] = default
+        typ = builtin_map.get(value) if isinstance(value, type) else None
+        if typ is None and isinstance(value, type):
+            typ = "string"
+        field["type"] = typ or "string"
+        out.append(field)
+    return out
+
+
+def _serialize_data_schema(schema: Any) -> list[Any]:
+    """Serialize voluptuous/probatio schema for the console (HA websocket parity).
+
+    HA 2026.9+ uses ``probatio.to_field_list`` and no longer ships
+    ``voluptuous_serialize`` in all installs. Prefer probatio, then the legacy
+    package, then a minimal builtin walk.
+    """
+    ha_custom = None
+    try:
+        from homeassistant.helpers import config_validation as cv
+
+        ha_custom = cv.custom_serializer
+    except Exception:  # noqa: BLE001
+        ha_custom = None
+
+    # 1) HA 2026.9+ — probatio (replaces voluptuous_serialize)
+    try:
+        from probatio import UNSUPPORTED, to_field_list
+
+        converted = to_field_list(
+            schema,
+            custom_serializer=_schema_custom_serializer(ha_custom, UNSUPPORTED),
+        )
+        if isinstance(converted, list):
+            return converted
+    except ImportError:
+        pass
+    except Exception as exc:  # noqa: BLE001
+        _LOGGER.debug("probatio to_field_list failed: %s", exc)
+
+    # 2) Legacy HA — voluptuous_serialize
+    try:
+        import voluptuous_serialize
+        from voluptuous_serialize import UNSUPPORTED as VS_UNSUPPORTED
+
+        converted = voluptuous_serialize.convert(
+            schema,
+            custom_serializer=_schema_custom_serializer(
+                ha_custom, VS_UNSUPPORTED
+            ),
+        )
+        if isinstance(converted, list):
+            return converted
+    except ImportError:
+        pass
+    except Exception as exc:  # noqa: BLE001
+        _LOGGER.debug("voluptuous_serialize.convert failed: %s", exc)
+
+    # 3) Last resort — enough for Xiaomi EULA bool / simple string fields
+    return _manual_serialize_schema(schema)
+
+
 def _apply_placeholders(text: str, placeholders: dict[str, Any] | None) -> str:
     if not text or not placeholders:
         return text
@@ -65,28 +177,13 @@ def serialize_flow_result(result: dict[str, Any]) -> dict[str, Any]:
     schema = result.get("data_schema")
     if schema is not None:
         try:
-            import voluptuous_serialize
-
-            try:
-                from homeassistant.helpers import (
-                    config_validation as cv,
-                )
-
-                custom = cv.custom_serializer
-            except Exception:  # noqa: BLE001
-                custom = None
-            if custom is not None:
-                out["data_schema"] = voluptuous_serialize.convert(
-                    schema, custom_serializer=custom
-                )
-            else:
-                out["data_schema"] = voluptuous_serialize.convert(schema)
+            out["data_schema"] = _serialize_data_schema(schema)
         except Exception as exc:  # noqa: BLE001
             _LOGGER.warning("data_schema serialize failed: %s", exc)
             out["data_schema"] = []
             out["data_schema_error"] = str(exc)
 
-    if rtype == FlowResultType.CREATE_ENTRY.value or rtype == "create_entry":
+    if rtype == "create_entry":
         entry = result.get("result")
         if entry is not None and hasattr(entry, "entry_id"):
             out["entry"] = {
@@ -99,10 +196,10 @@ def serialize_flow_result(result: dict[str, Any]) -> dict[str, Any]:
         if "title" in result:
             out["title"] = result.get("title")
 
-    if rtype == FlowResultType.ABORT.value or rtype == "abort":
+    if rtype == "abort":
         out["reason"] = result.get("reason")
 
-    if rtype == FlowResultType.MENU.value or rtype == "menu":
+    if rtype == "menu":
         out["menu_options"] = result.get("menu_options")
 
     return out
@@ -117,13 +214,34 @@ async def _load_flow_translations(
     try:
         from homeassistant.helpers.translation import async_get_translations
 
-        language = getattr(hass.config, "language", None) or "en"
-        return await async_get_translations(
-            hass,
-            language,
-            category,
-            integrations={domain},
-        )
+        language = str(getattr(hass.config, "language", None) or "en")
+        # Xiaomi etc. ship zh-Hans.json; hass language may be "zh" / "zh-CN".
+        candidates: list[str] = [language]
+        if language.startswith("zh"):
+            for extra in ("zh-Hans", "zh-Hant", "zh"):
+                if extra not in candidates:
+                    candidates.append(extra)
+        if "en" not in candidates:
+            candidates.append("en")
+
+        merged: dict[str, str] = {}
+        for lang in candidates:
+            try:
+                part = await async_get_translations(
+                    hass,
+                    lang,
+                    category,
+                    integrations={domain},
+                )
+            except Exception:  # noqa: BLE001
+                continue
+            if not part:
+                continue
+            # Prefer earlier candidates (requested language first); only fill gaps.
+            for key, value in part.items():
+                if key not in merged and value:
+                    merged[key] = value
+        return merged
     except Exception as exc:  # noqa: BLE001
         _LOGGER.debug("flow translations load failed for %s: %s", domain, exc)
         return {}
@@ -225,21 +343,22 @@ async def enrich_flow_result(
             errors_out[str(err_key)] = translated or code
         localized["errors"] = errors_out
 
-    if rtype in (FlowResultType.ABORT.value, "abort"):
+    if rtype == "abort":
         reason = str(out.get("reason") or "")
         if reason:
             abort_msg = lookup("abort", reason)
             if abort_msg:
                 localized["abort"] = abort_msg
 
-    if rtype in (FlowResultType.PROGRESS.value, "progress"):
+    # HA: FlowResultType.SHOW_PROGRESS.value == "progress" (no .PROGRESS member)
+    if rtype in ("progress", "show_progress"):
         action = str(out.get("progress_action") or "")
         if action:
             progress_msg = lookup("progress", action)
             if progress_msg:
                 localized["progress_action"] = progress_msg
 
-    if rtype in (FlowResultType.CREATE_ENTRY.value, "create_entry"):
+    if rtype == "create_entry":
         create_msg = lookup("create_entry", "default")
         if create_msg:
             localized["create_entry"] = create_msg

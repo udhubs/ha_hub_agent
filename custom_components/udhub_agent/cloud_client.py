@@ -1075,6 +1075,14 @@ class UdhubCloudClient:
                 result_payload["status"] = "ok"
                 result_payload["pong"] = True
                 result_payload["agent_version"] = AGENT_VERSION
+                try:
+                    from . import self_update as _su
+
+                    result_payload["disk_version"] = _su._disk_manifest_version(
+                        self.hass
+                    )
+                except Exception:  # noqa: BLE001
+                    result_payload["disk_version"] = None
                 result_payload["probed_at"] = _now_iso()
             elif kind == "ssh_bypass_probe":
                 await asyncio.wait_for(
@@ -1564,18 +1572,11 @@ class UdhubCloudClient:
                         "UDHUB agent_update reload task COMPLETED"
                     )
 
-            health_timeout = float(
-                update_result.get("health_timeout_sec")
-                or payload.get("health_timeout_sec")
-                or 90
-            )
             task = asyncio.Task(
                 self_update_mod.schedule_reload_after_update(
                     self.hass,
                     self.entry,
                     target_version=str(update_result.get("version") or ""),
-                    rollback_on_failure=True,
-                    health_timeout_sec=health_timeout,
                 ),
                 context=contextvars.Context(),
             )
@@ -1583,11 +1584,7 @@ class UdhubCloudClient:
             self._reload_task = task
             result["reloading"] = True
             result["restarting"] = False
-            result["rollback_armed"] = True
-            result["message"] = (
-                "package applied; reloading integration "
-                f"(auto-rollback if cloud health fails within {int(health_timeout)}s)"
-            )
+            result["message"] = "package applied; reloading integration"
 
     async def _exec_registry_update(
         self, payload: dict[str, Any], result: dict[str, Any]

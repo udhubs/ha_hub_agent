@@ -52,10 +52,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     if entry.data.get(CONF_ACCESS_TOKEN) and entry.data.get(CONF_GATEWAY_ID):
         await client.start()
-        # Resume OTA health watch / auto-rollback if a previous upgrade left a marker.
-        from . import self_update as self_update_mod
-
-        self_update_mod.spawn_ota_health_watch_if_pending(hass, entry)
     else:
         coro = _wait_for_saas_claim(hass, entry)
         name = f"udhub_claim_{entry.entry_id}"

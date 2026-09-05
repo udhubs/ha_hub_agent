@@ -231,6 +231,7 @@ async def _integration(hass: HomeAssistant, action: str, payload: dict[str, Any]
         ent_reg = er.async_get(hass)
         items = []
         for entry in hass.config_entries.async_entries():
+            reason = getattr(entry, "reason", None)
             items.append(
                 {
                     "entry_id": entry.entry_id,
@@ -239,6 +240,16 @@ async def _integration(hass: HomeAssistant, action: str, payload: dict[str, Any]
                     "state": str(entry.state) if entry.state else None,
                     "source": entry.source,
                     "disabled_by": str(entry.disabled_by) if entry.disabled_by else None,
+                    "reason": str(reason) if reason else None,
+                    "supports_options": bool(
+                        getattr(entry, "supports_options", False)
+                    ),
+                    "supports_reconfigure": bool(
+                        getattr(entry, "supports_reconfigure", False)
+                    ),
+                    "supports_unload": bool(
+                        getattr(entry, "supports_unload", False)
+                    ),
                     "devices_count": len(
                         _devices_for_config_entry(dev_reg, entry.entry_id)
                     ),
@@ -342,26 +353,58 @@ async def _integration(hass: HomeAssistant, action: str, payload: dict[str, Any]
         dev_reg = dr.async_get(hass)
         ent_reg = er.async_get(hass)
         if action == "devices_list":
+            from .device_registry_fields import (
+                device_parent_id,
+                device_config_entry_id,
+                _area_name,
+                resolve_area_with_parent,
+            )
+
             seen: set[str] = set()
             devices: list[dict[str, Any]] = []
+            # Build id→device map once so child area can inherit parent.
+            devices_by_id: dict[str, Any] = {}
+            for eid in target_ids:
+                for d in _devices_for_config_entry(dev_reg, eid):
+                    devices_by_id[d.id] = d
             for eid in target_ids:
                 for d in _devices_for_config_entry(dev_reg, eid):
                     if d.id in seen:
                         continue
                     seen.add(d.id)
                     entities = _entities_for_device(ent_reg, d.id)
+                    entry_type = getattr(d, "entry_type", None)
+                    entry_type_s = (
+                        str(entry_type).split(".")[-1].lower()
+                        if entry_type
+                        else None
+                    )
+                    via = getattr(d, "via_device_id", None)
+                    area_id = resolve_area_with_parent(d, devices_by_id)
+                    entry_ids = list(getattr(d, "config_entries", None) or [])
+                    # Child devices may only expose singular config_entry_id.
+                    if not entry_ids:
+                        ce = device_config_entry_id(d)
+                        if ce:
+                            entry_ids = [ce]
+                    if eid not in entry_ids:
+                        entry_ids.append(eid)
                     devices.append(
                         {
                             "id": d.id,
                             "name": d.name_by_user or d.name,
                             "manufacturer": d.manufacturer,
                             "model": d.model,
-                            "area_id": d.area_id,
+                            "area_id": area_id,
+                            "area_name": _area_name(hass, area_id),
                             "disabled_by": str(d.disabled_by)
                             if d.disabled_by
                             else None,
-                            "config_entry_ids": list(d.config_entries),
+                            "config_entry_ids": entry_ids,
                             "entities_count": len(entities),
+                            "parent_device_id": device_parent_id(d),
+                            "via_device_id": str(via) if via else None,
+                            "entry_type": entry_type_s,
                         }
                     )
             devices.sort(key=lambda x: str(x.get("name") or "").lower())

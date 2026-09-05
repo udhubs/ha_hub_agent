@@ -1,5 +1,21 @@
 DOMAIN = "udhub_agent"
-AGENT_VERSION = "0.4.44"
+import json as _json
+from pathlib import Path as _Path
+
+def _agent_version_from_manifest() -> str:
+    """Single source of truth: manifest.json (what HA UI shows)."""
+    try:
+        data = _json.loads(
+            _Path(__file__).with_name("manifest.json").read_text(encoding="utf-8")
+        )
+        ver = str(data.get("version") or "").strip()
+        if ver:
+            return ver
+    except Exception:  # noqa: BLE001
+        pass
+    return "0.0.0"
+
+AGENT_VERSION = _agent_version_from_manifest()
 PROTOCOL_VERSION = "0.1"
 DEFAULT_CLOUD_URL = "https://www.udhub.com"
 CONF_CLOUD_URL = "cloud_url"

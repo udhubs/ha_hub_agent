@@ -2,6 +2,18 @@
 
 版本号与 Git tag、`custom_components/udhub_agent/manifest.json` 的 `version` 三处必须一致。
 
+## [0.5.2] — 2026-09-04
+
+### Fixed
+
+- OTA 包写盘后若重载仍未切到新版本，自动触发 `homeassistant.restart`，避免磁盘已更新、运行时仍旧版
+- Config Flow 表单序列化：HA 2026.9 优先 `probatio`，兼容 `voluptuous_serialize` 与手动 schema 遍历（修复米家等集成表单解析失败）
+
+### Changed
+
+- 自云枢 monorepo Agent **0.5.2** 全量同步
+- 集成详情对齐 HA：父子设备、`area_name`、`supports_*`、条目能力字段
+
 ## [0.4.44] — 2026-09-04
 
 ### Safety
