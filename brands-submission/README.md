@@ -23,7 +23,7 @@ custom_integrations/udhub_agent/
 
 ## 设计来源
 
-基于云枢 `docs/dev-only/doc/brand/udhub-logo-icon.svg`（菱形 + 云枢青圆点）栅格化；正式发版前可用设计定稿 SVG 重导出替换。
+与云枢控制台一致：`web/public/favicon.svg` / 侧栏 `BrandMark`（深蓝圆角底 + 云枢青菱形描边 + 圆心）。正式发版前可用设计定稿 SVG 重导出替换。
 
 ## 状态
 
