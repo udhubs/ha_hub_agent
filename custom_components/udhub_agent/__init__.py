@@ -52,6 +52,26 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     if entry.data.get(CONF_ACCESS_TOKEN) and entry.data.get(CONF_GATEWAY_ID):
         await client.start()
+        # Clear leftover user/reauth wizards from prior SaaS sessions (keep discovery).
+        async def _cleanup_stale_flows() -> None:
+            try:
+                from . import integration_flow
+
+                result = await integration_flow.flow_cleanup(hass, {})
+                n = int((result or {}).get("aborted_count") or 0)
+                if n:
+                    _LOGGER.info(
+                        "UDHUB cleaned %s stale config flow(s) on start", n
+                    )
+            except Exception:  # noqa: BLE001
+                _LOGGER.debug("UDHUB flow_cleanup on start failed", exc_info=True)
+
+        if hasattr(hass, "async_create_background_task"):
+            hass.async_create_background_task(
+                _cleanup_stale_flows(), "udhub_flow_cleanup"
+            )
+        else:
+            hass.async_create_task(_cleanup_stale_flows())
     else:
         coro = _wait_for_saas_claim(hass, entry)
         name = f"udhub_claim_{entry.entry_id}"

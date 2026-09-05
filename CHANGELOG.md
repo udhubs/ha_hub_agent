@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.15
+
+- Sync from monorepo: SaaS integration mirror install, online status, Matter commission
+- Formal distribution: install.sh dual-source (GitHub→Gitee), brands-submission assets
+
+
 版本号与 Git tag、`custom_components/udhub_agent/manifest.json` 的 `version` 三处必须一致。
 
 ## [0.5.2] — 2026-09-04

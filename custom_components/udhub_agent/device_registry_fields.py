@@ -196,6 +196,48 @@ def probe_ha_features(hass: HomeAssistant, ha_version: str | None) -> dict[str, 
         else "legacy_multi_entry"
     )
 
+    # hassio / Supervisor API presence (doc 19 §9)
+    hassio_available = False
+    try:
+        hassio_available = bool(
+            hass.data.get("hassio")
+            or hass.config.components
+            and "hassio" in hass.config.components
+        )
+        if not hassio_available:
+            # SUPERVISOR_TOKEN is the practical gate for L3
+            import os
+
+            hassio_available = bool(os.environ.get("SUPERVISOR_TOKEN"))
+    except Exception:  # noqa: BLE001
+        hassio_available = False
+
+    # Critical integration pip / import health (doc 19 §9)
+    pip_checks: dict[str, Any] = {}
+    for mod_name, import_path in (
+        ("aiohttp", "aiohttp"),
+        ("matter", "matter_server.client"),
+        ("zha", "zigpy"),
+    ):
+        try:
+            __import__(import_path)
+            pip_checks[mod_name] = {"ok": True, "module": import_path}
+        except Exception as exc:  # noqa: BLE001
+            pip_checks[mod_name] = {
+                "ok": False,
+                "module": import_path,
+                "error": str(exc)[:200],
+            }
+    # Only flag matter/zha as required if those integrations are configured
+    try:
+        if not list(hass.config_entries.async_entries("matter")):
+            pip_checks.pop("matter", None)
+        if not list(hass.config_entries.async_entries("zha")):
+            pip_checks.pop("zha", None)
+    except Exception:  # noqa: BLE001
+        pass
+    pip_deps_ok = all(v.get("ok") for v in pip_checks.values()) if pip_checks else True
+
     return {
         "ha_version": ver,
         "registry_schema": registry_schema,
@@ -207,4 +249,7 @@ def probe_ha_features(hass: HomeAssistant, ha_version: str | None) -> dict[str, 
         "list_composite_splits": _ws_or_ver(
             "config/device_registry/list_composite_splits"
         ),
+        "hassio_available": hassio_available,
+        "pip_deps": pip_checks,
+        "pip_deps_ok": pip_deps_ok,
     }

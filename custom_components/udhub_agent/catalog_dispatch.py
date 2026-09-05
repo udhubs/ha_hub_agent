@@ -181,6 +181,14 @@ async def dispatch_catalog(
             from . import ha_config_objects
 
             snap = await ha_config_objects.dispatch_blueprint(hass, ga, payload)
+        elif gk == "matter":
+            from . import matter_rpc
+
+            snap = await matter_rpc.dispatch(hass, ga, payload)
+        elif gk == "diagnostics":
+            from . import diagnostics_ops
+
+            snap = await diagnostics_ops.dispatch(hass, ga, payload)
         elif gk == "automation_config":
             from . import ha_config_objects
 
@@ -311,15 +319,23 @@ async def _integration(hass: HomeAssistant, action: str, payload: dict[str, Any]
             return {"status": "failed", "error": "not_found"}
         return {"status": "ok", "options": dict(e.options or {})}
     if action == "options_set":
+        # Break-glass only — HA native path is options flow. Require confirm.
+        if not payload.get("confirm"):
+            return {
+                "status": "failed",
+                "error": "options_set_requires_confirm",
+                "hint": "Use options_flow_start/step; pass confirm=true only for break-glass",
+            }
         if not entry_id:
             return {"status": "failed", "error": "missing_entry_id"}
         options = payload.get("options")
         if not isinstance(options, dict):
             return {"status": "failed", "error": "options_must_be_object"}
-        hass.config_entries.async_update_entry(
-            hass.config_entries.async_get_entry(str(entry_id)), options=options
-        )
-        return {"status": "ok", "entry_id": entry_id}
+        e = hass.config_entries.async_get_entry(str(entry_id))
+        if not e:
+            return {"status": "failed", "error": "not_found"}
+        hass.config_entries.async_update_entry(e, options=options)
+        return {"status": "ok", "entry_id": entry_id, "break_glass": True}
     if action == "rename_title":
         if not entry_id:
             return {"status": "failed", "error": "missing_entry_id"}
@@ -451,10 +467,16 @@ async def _integration(hass: HomeAssistant, action: str, payload: dict[str, Any]
         return await integration_flow.flow_get(hass, payload)
     if action == "flow_progress":
         return await integration_flow.flow_progress(hass, payload)
+    if action == "flow_cleanup":
+        return await integration_flow.flow_cleanup(hass, payload)
+    if action == "ignore_flow":
+        return await integration_flow.ignore_flow(hass, payload)
     if action == "options_flow_start":
         return await integration_flow.options_flow_start(hass, payload)
     if action == "options_flow_step":
         return await integration_flow.options_flow_step(hass, payload)
+    if action == "options_flow_abort":
+        return await integration_flow.options_flow_abort(hass, payload)
     return {"status": "failed", "error": "unsupported_action"}
 
 
@@ -570,6 +592,44 @@ async def _ha_system(hass: HomeAssistant, action: str, payload: dict[str, Any]) 
         )
         return {"status": "ok"}
     if action == "config_get":
+        external = getattr(hass.config, "external_url", None)
+        internal = getattr(hass.config, "internal_url", None)
+        get_url_value = None
+        try:
+            from homeassistant.helpers.network import get_url as ha_get_url
+
+            get_url_value = ha_get_url(hass, prefer_external=True)
+        except Exception:  # noqa: BLE001
+            try:
+                from homeassistant.helpers.network import get_url as ha_get_url
+
+                get_url_value = ha_get_url(hass)
+            except Exception:  # noqa: BLE001
+                get_url_value = None
+
+        lan_candidates: list[str] = []
+        try:
+            # Best-effort LAN IPs for Xiaomi OAuth hosts-file tips
+            # (OAUTH_REDIRECT_URL is hard-coded to homeassistant.local:8123).
+            import socket
+
+            hostname = socket.gethostname()
+            for info in socket.getaddrinfo(hostname, None, socket.AF_INET):
+                ip = info[4][0]
+                if ip and not ip.startswith("127.") and ip not in lan_candidates:
+                    lan_candidates.append(ip)
+        except Exception:  # noqa: BLE001
+            pass
+
+        units = getattr(hass.config, "units", None)
+        unit_name = None
+        if units is not None:
+            unit_name = getattr(units, "name", None) or str(
+                getattr(units, "_name", None) or units
+            )
+            if unit_name and len(str(unit_name)) > 64:
+                unit_name = str(unit_name)[:64]
+
         return {
             "status": "ok",
             "config": {
@@ -579,11 +639,16 @@ async def _ha_system(hass: HomeAssistant, action: str, payload: dict[str, Any]) 
                 "latitude": hass.config.latitude,
                 "longitude": hass.config.longitude,
                 "elevation": hass.config.elevation,
-                "unit_system": str(getattr(hass.config, "units", None)),
-                "external_url": getattr(hass.config, "external_url", None),
-                "internal_url": getattr(hass.config, "internal_url", None),
+                "unit_system": unit_name,
+                "external_url": external,
+                "internal_url": internal,
+                "get_url": get_url_value,
+                "lan_candidates": lan_candidates,
                 "version": getattr(hass.config, "version", None)
                 and str(hass.config.version),
+                # Xiaomi Home registers this fixed redirect with Mi OAuth;
+                # remote SaaS browsers must resolve it to the field HA.
+                "xiaomi_oauth_redirect_base": "http://homeassistant.local:8123",
             },
         }
     if action == "config_update":

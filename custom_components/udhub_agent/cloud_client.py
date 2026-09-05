@@ -186,7 +186,8 @@ def _state_to_entity(
         if hidden_by and domain not in ("scene", "automation"):
             return None
     s = state.state
-    available = s not in ("unavailable", "unknown", None)
+    # unavailable = 真离线；unknown 多为尚未读到态，不按离线计（对齐 HA 设备页观感）
+    available = s != "unavailable" and s is not None
     attrs = _safe_attributes(state)
     if registry_entry is not None and getattr(registry_entry, "entity_category", None):
         attrs.setdefault("entity_category", str(registry_entry.entity_category).split(".")[-1].lower())
@@ -843,6 +844,32 @@ class UdhubCloudClient:
             service_type = getattr(dr, "DeviceEntryType", None)
             service_enum = getattr(service_type, "SERVICE", None) if service_type else None
             by_id = {d.id: d for d in registry.devices.values()}
+            # Precompute availability from entity states (device online)
+            from homeassistant.helpers import entity_registry as er
+
+            ent_reg = er.async_get(self.hass)
+            online_by_device: dict[str, bool] = {}
+            if ent_reg is not None:
+                for entry in ent_reg.entities.values():
+                    did = getattr(entry, "device_id", None)
+                    if not did:
+                        continue
+                    cat = getattr(entry, "entity_category", None)
+                    cat_s = (
+                        str(getattr(cat, "value", cat) or "").lower()
+                        if cat
+                        else ""
+                    )
+                    if cat_s in ("diagnostic", "config"):
+                        continue
+                    st = self.hass.states.get(entry.entity_id)
+                    if st is None:
+                        continue
+                    if st.state != "unavailable":
+                        online_by_device[did] = True
+                    elif did not in online_by_device:
+                        online_by_device[did] = False
+
             devices = []
             for d in registry.devices.values():
                 if getattr(d, "disabled_by", None) or getattr(d, "disabled", False):
@@ -857,7 +884,12 @@ class UdhubCloudClient:
                     and getattr(d, "entry_type", None) == service_enum
                 ):
                     row["entry_type"] = "service"
-                row["online_status"] = "UNKNOWN"
+                if d.id in online_by_device:
+                    row["online_status"] = (
+                        "online" if online_by_device[d.id] else "offline"
+                    )
+                else:
+                    row["online_status"] = "UNKNOWN"
                 devices.append(row)
             return devices
         except Exception:
@@ -2091,10 +2123,14 @@ class UdhubCloudClient:
 
         new_text = content if isinstance(content, str) else str(content)
 
-        # B-pipeline: optional Supervisor full backup before overwrite (best-effort)
+        # B-pipeline: Supervisor full backup before overwrite
+        # fail_closed_backup=true（默认当 require_supervisor）时：无 Supervisor 且要求备份则拦截
         pre_backup = payload.get("pre_backup")
         if pre_backup is None:
             pre_backup = True
+        fail_closed = payload.get("fail_closed_backup")
+        if fail_closed is None:
+            fail_closed = bool(payload.get("require_supervisor"))
         if pre_backup and not delete_file:
             try:
                 from datetime import datetime, timezone
@@ -2108,9 +2144,24 @@ class UdhubCloudClient:
                 result["pre_backup"] = bak
                 if bak.get("supported") is False:
                     result["pre_backup_skipped"] = bak.get("detail") or "no_supervisor"
+                    if fail_closed:
+                        result["status"] = "failed"
+                        result["error"] = "pre_backup_required"
+                        result["detail"] = result["pre_backup_skipped"]
+                        return
+                elif bak.get("status") == "failed":
+                    result["pre_backup_error"] = bak.get("error") or "backup_failed"
+                    if fail_closed:
+                        result["status"] = "failed"
+                        result["error"] = "pre_backup_failed"
+                        return
             except Exception as exc:  # noqa: BLE001
-                _LOGGER.warning("UDHUB pre_backup failed (continuing write): %s", exc)
+                _LOGGER.warning("UDHUB pre_backup failed: %s", exc)
                 result["pre_backup_error"] = str(exc)
+                if fail_closed:
+                    result["status"] = "failed"
+                    result["error"] = "pre_backup_failed"
+                    return
 
         # write atomically
         tmp = f"{full_path}.tmp"
@@ -2170,7 +2221,7 @@ class UdhubCloudClient:
                     _LOGGER.warning("UDHUB reload service failed: %s (%s)", svc, exc)
                     reload_errors.append(f"{svc}:{exc}")
 
-        # Domain health after reload (non-fatal)
+        # Domain health after reload — fail-closed when any domain reports ok=False
         health: dict[str, Any] = {}
         for svc in services:
             if not (isinstance(svc, str) and "." in svc):
@@ -2187,6 +2238,16 @@ class UdhubCloudClient:
             result["domain_health"] = health
             if any(not v.get("ok") for v in health.values()):
                 result["domain_health_warning"] = True
+                fail_closed_health = payload.get("fail_closed_health")
+                if fail_closed_health is None:
+                    fail_closed_health = True
+                if fail_closed_health:
+                    await _restore_previous()
+                    result["status"] = "failed"
+                    result["error"] = "domain_health_failed"
+                    result["rolled_back"] = True
+                    result["path"] = relative
+                    return
 
         # 校验 scene package 是否真正注册（避免「落盘成功但 entity 不存在」）
         text = new_text

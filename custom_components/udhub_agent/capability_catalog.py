@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-CATALOG_VERSION = 8
+CATALOG_VERSION = 12
 
 # Generic kinds → allowed actions
 GENERIC_KINDS: dict[str, list[str]] = {
@@ -73,8 +73,11 @@ GENERIC_KINDS: dict[str, list[str]] = {
         "flow_abort",
         "flow_get",
         "flow_progress",
+        "flow_cleanup",
+        "ignore_flow",
         "options_flow_start",
         "options_flow_step",
+        "options_flow_abort",
     ],
     "user": ["list", "create", "delete", "update"],
     "ha_system": [
@@ -133,6 +136,28 @@ GENERIC_KINDS: dict[str, list[str]] = {
     "event": ["fire"],
     "template": ["render"],
     "blueprint": ["list", "import", "delete"],
+    "matter": [
+        "probe",
+        "rpc",
+        "nodes",
+        "get_nodes",
+        "commission",
+        "commission_with_code",
+        "open_commissioning_window",
+        "commissioning_window",
+        "check_node_update",
+        "node_update_check",
+        "set_wifi_credentials",
+        "wifi_credentials",
+    ],
+    "diagnostics": [
+        "brand_probe",
+        "protocol_probe",
+        "link_probe",
+        "full",
+        "post_upgrade",
+        "post_upgrade_health",
+    ],
     "automation_config": [
         "list",
         "get",
