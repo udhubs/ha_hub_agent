@@ -1,13 +1,19 @@
-"""HACS probe / list, plus curated repo install via SaaS mirror (GitHub fallback).
+"""HACS probe / list, plus custom integration install via SaaS mirror or GitHub.
 
-Curated install prefers ``GET /api/v1/agent/integration-mirrors/{domain}/latest``
-from the Agent's configured cloud URL, then falls back to GitHub Releases.
-Security gates:
+Install policy (1+2):
 
-- Repository allowlist (Agent-side final gate; console mirrors the list)
-- Explicit ``confirm=true`` (same pattern as gated backup restore)
+- **Mirror catalog is the preferred source**: any domain published under
+  ``/api/v1/agent/integration-mirrors`` can be installed (SaaS zip + sha256).
+- **Open GitHub Releases**: any ``owner/repo`` with a release ``.zip`` asset can
+  be installed when ``confirm=true`` (UI secondary confirmation required).
+- Hardcoded ``KNOWN_REPOS`` is only a seed for probe labels / asset defaults,
+  **not** an install deny-list.
+
+Remaining gates:
+
+- Explicit ``confirm=true``
 - Extended tier enforced upstream by catalog dispatch
-- sha256 verification against SaaS manifest or GitHub release digest
+- sha256 when SaaS / GitHub digest is present
 - zip path safety (reject absolute / ``..`` members)
 """
 
@@ -16,6 +22,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import shutil
 import tempfile
 import zipfile
@@ -30,19 +37,32 @@ from .const import DEFAULT_CLOUD_URL, DOMAIN
 _LOGGER = logging.getLogger(__name__)
 
 GITHUB_API = "https://api.github.com"
-MAX_ZIP_BYTES = 50 * 1024 * 1024
-MAX_MEMBERS = 2000
+MAX_ZIP_BYTES = 80 * 1024 * 1024
+# HACS release zip ≈ 2300 members; leave headroom for large frontends.
+MAX_MEMBERS = 10000
 
-# Curated repositories — install/uninstall restricted to these entries.
-# Keep in sync with console LocalIntegrationLibraryPanel CURATED_REPOS.
-CURATED_REPOS: dict[str, dict[str, str]] = {
+_REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+_DOMAIN_RE = re.compile(r"^[a-z0-9_]+$")
+
+# Optional seed — labels / default assets for well-known packages.
+# Keep loosely in sync with console; does NOT gate install.
+KNOWN_REPOS: dict[str, dict[str, str]] = {
     "xiaomi_home": {
         "repo": "XiaoMi/ha_xiaomi_home",
         "domain": "xiaomi_home",
         "asset": "xiaomi_home.zip",
         "label": "米家 Xiaomi Home",
     },
+    "hacs": {
+        "repo": "hacs/integration",
+        "domain": "hacs",
+        "asset": "hacs.zip",
+        "label": "HACS 社区商店",
+    },
 }
+
+# Backward-compatible alias used by older console copy.
+CURATED_REPOS = KNOWN_REPOS
 
 
 def _hacs(hass: HomeAssistant) -> Any | None:
@@ -57,54 +77,114 @@ def _config_path(hass: HomeAssistant) -> Path | None:
     return Path(str(config_dir)) if config_dir else None
 
 
-def _resolve_curated(payload: dict[str, Any]) -> dict[str, str] | None:
-    needle = str(
-        payload.get("repository")
-        or payload.get("repo")
-        or payload.get("full_name")
-        or payload.get("domain")
-        or ""
-    ).strip().lower()
-    if not needle:
+def _normalize_repo(value: str) -> str | None:
+    raw = str(value or "").strip()
+    if not raw:
         return None
-    for entry in CURATED_REPOS.values():
-        if needle in (entry["repo"].lower(), entry["domain"]):
-            return entry
+    raw = raw.removeprefix("https://github.com/").removeprefix(
+        "http://github.com/"
+    )
+    raw = raw.removesuffix(".git").strip("/")
+    if not _REPO_RE.match(raw):
+        return None
+    return raw
+
+
+def _normalize_domain(value: str) -> str | None:
+    raw = str(value or "").strip().lower().replace("-", "_")
+    if not raw or not _DOMAIN_RE.match(raw):
+        return None
+    return raw
+
+
+def _domain_from_repo(repo: str) -> str | None:
+    name = repo.split("/", 1)[-1]
+    name = re.sub(r"^ha[_-]?", "", name, flags=re.I)
+    name = re.sub(r"^home[_-]?assistant[_-]?", "", name, flags=re.I)
+    return _normalize_domain(name)
+
+
+def _match_known(needle: str) -> dict[str, str] | None:
+    n = needle.strip().lower()
+    if not n:
+        return None
+    for entry in KNOWN_REPOS.values():
+        if n in (entry["repo"].lower(), entry["domain"]):
+            return dict(entry)
     return None
 
 
-def _installed_curated(hass: HomeAssistant) -> list[dict[str, Any]]:
+def _installed_manifest_version(config_path: Path, domain: str) -> str | None:
+    manifest = config_path / "custom_components" / domain / "manifest.json"
+    if not manifest.is_file():
+        return None
+    try:
+        return json.loads(manifest.read_text()).get("version")
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _installed_library(hass: HomeAssistant) -> list[dict[str, Any]]:
+    """Known seeds + any custom_components with a manifest."""
     config_path = _config_path(hass)
-    out: list[dict[str, Any]] = []
-    for key, entry in CURATED_REPOS.items():
+    by_domain: dict[str, dict[str, Any]] = {}
+
+    for key, entry in KNOWN_REPOS.items():
         item: dict[str, Any] = {
             "key": key,
             **entry,
             "installed": False,
             "version": None,
+            "source_hint": "known",
         }
         if config_path:
-            manifest = (
-                config_path
-                / "custom_components"
-                / entry["domain"]
-                / "manifest.json"
-            )
-            if manifest.is_file():
-                item["installed"] = True
-                try:
-                    item["version"] = json.loads(manifest.read_text()).get("version")
-                except Exception:  # noqa: BLE001
-                    pass
-        out.append(item)
-    return out
+            ver = _installed_manifest_version(config_path, entry["domain"])
+            if ver is not None or (
+                config_path / "custom_components" / entry["domain"]
+            ).is_dir():
+                item["installed"] = (
+                    config_path / "custom_components" / entry["domain"]
+                ).is_dir()
+                item["version"] = ver
+        by_domain[entry["domain"]] = item
+
+    if config_path:
+        root = config_path / "custom_components"
+        if root.is_dir():
+            for child in root.iterdir():
+                if not child.is_dir() or child.name.startswith("."):
+                    continue
+                domain = child.name
+                if domain in by_domain:
+                    continue
+                if domain == DOMAIN:
+                    continue
+                ver = _installed_manifest_version(config_path, domain)
+                if ver is None and not (child / "manifest.json").is_file():
+                    continue
+                by_domain[domain] = {
+                    "key": domain,
+                    "domain": domain,
+                    "repo": "",
+                    "asset": f"{domain}.zip",
+                    "label": domain,
+                    "installed": True,
+                    "version": ver,
+                    "source_hint": "host",
+                }
+
+    return sorted(by_domain.values(), key=lambda x: str(x.get("label") or x.get("domain")))
+
+
+# Alias for probe/list payloads (console still reads ``curated``).
+def _installed_curated(hass: HomeAssistant) -> list[dict[str, Any]]:
+    return _installed_library(hass)
 
 
 async def probe(hass: HomeAssistant) -> dict[str, Any]:
     hacs = _hacs(hass)
     curated = _installed_curated(hass)
     if hacs is None:
-        # config entry presence
         entries = [
             e
             for e in hass.config_entries.async_entries()
@@ -115,6 +195,7 @@ async def probe(hass: HomeAssistant) -> dict[str, Any]:
             "installed": bool(entries),
             "detail": "config_entry" if entries else "not_installed",
             "curated": curated,
+            "policy": "mirror_or_github",
         }
     version = getattr(hacs, "version", None) or getattr(hacs, "system", None)
     return {
@@ -122,6 +203,7 @@ async def probe(hass: HomeAssistant) -> dict[str, Any]:
         "installed": True,
         "version": str(version) if version else None,
         "curated": curated,
+        "policy": "mirror_or_github",
     }
 
 
@@ -134,6 +216,7 @@ async def list_repos(hass: HomeAssistant, payload: dict[str, Any]) -> dict[str, 
             "installed": False,
             "repositories": [],
             "curated": curated,
+            "policy": "mirror_or_github",
         }
     category = payload.get("category")
     repos = []
@@ -179,6 +262,7 @@ async def list_repos(hass: HomeAssistant, payload: dict[str, Any]) -> dict[str, 
         "installed": True,
         "repositories": repos,
         "curated": _installed_curated(hass),
+        "policy": "mirror_or_github",
     }
 
 
@@ -193,6 +277,33 @@ async def _fetch_latest_release(
         if resp.status >= 400:
             raise RuntimeError(f"github_api_http_{resp.status}")
         return await resp.json()
+
+
+def _pick_release_asset(
+    release: dict[str, Any], domain: str, preferred: str | None
+) -> dict[str, Any] | None:
+    assets = list(release.get("assets") or [])
+    if preferred:
+        hit = next((a for a in assets if a.get("name") == preferred), None)
+        if hit:
+            return hit
+    domain_zip = f"{domain}.zip"
+    hit = next((a for a in assets if a.get("name") == domain_zip), None)
+    if hit:
+        return hit
+    zips = [
+        a
+        for a in assets
+        if str(a.get("name") or "").lower().endswith(".zip")
+        and "source" not in str(a.get("name") or "").lower()
+    ]
+    if len(zips) == 1:
+        return zips[0]
+    if zips:
+        # Prefer smallest non-source zip named like the domain
+        zips.sort(key=lambda a: (0 if domain in str(a.get("name") or "") else 1, a.get("size") or 0))
+        return zips[0]
+    return None
 
 
 def _cloud_base_url(hass: HomeAssistant) -> str:
@@ -214,6 +325,90 @@ def _cloud_base_url(hass: HomeAssistant) -> str:
                 except Exception:  # noqa: BLE001
                     pass
     return DEFAULT_CLOUD_URL.rstrip("/")
+
+
+async def _fetch_saas_latest(
+    session: aiohttp.ClientSession, cloud_base: str, domain: str
+) -> dict[str, Any] | None:
+    meta_url = f"{cloud_base}/api/v1/agent/integration-mirrors/{domain}/latest"
+    try:
+        async with session.get(
+            meta_url, timeout=aiohttp.ClientTimeout(total=20)
+        ) as resp:
+            if resp.status >= 400:
+                return None
+            body = await resp.json(content_type=None)
+    except Exception as exc:  # noqa: BLE001
+        _LOGGER.info("UDHUB mirror meta failed domain=%s: %s", domain, exc)
+        return None
+    if not isinstance(body, dict):
+        return None
+    pkg = body.get("package") if isinstance(body.get("package"), dict) else body
+    if not isinstance(pkg, dict):
+        return None
+    return pkg
+
+
+async def _resolve_install_entry(
+    session: aiohttp.ClientSession,
+    cloud_base: str,
+    payload: dict[str, Any],
+) -> tuple[dict[str, str] | None, str | None]:
+    """Build install entry from payload + optional SaaS / GitHub metadata."""
+    repo_raw = str(
+        payload.get("repository")
+        or payload.get("repo")
+        or payload.get("full_name")
+        or ""
+    ).strip()
+    domain_raw = str(payload.get("domain") or "").strip()
+    asset_raw = str(payload.get("asset") or "").strip()
+    label_raw = str(payload.get("label") or "").strip()
+
+    known = _match_known(repo_raw) or _match_known(domain_raw)
+    repo = _normalize_repo(repo_raw) or (known["repo"] if known else None)
+    domain = _normalize_domain(domain_raw) or (
+        known["domain"] if known else None
+    )
+    if not domain and repo:
+        domain = _domain_from_repo(repo)
+    asset = asset_raw or (known["asset"] if known else "")
+    label = label_raw or (known["label"] if known else "") or domain or repo or ""
+
+    # Fill from SaaS mirror catalog when domain is known.
+    if domain:
+        pkg = await _fetch_saas_latest(session, cloud_base, domain)
+        if pkg:
+            if not repo:
+                repo = _normalize_repo(str(pkg.get("upstream_repo") or ""))
+            if not asset:
+                asset = str(pkg.get("asset") or "").strip()
+            if not label_raw:
+                label = str(pkg.get("label") or label).strip() or label
+
+    if not domain:
+        return None, "domain_required"
+
+    if not asset and repo:
+        try:
+            release = await _fetch_latest_release(session, repo)
+            picked = _pick_release_asset(release, domain, asset_raw or None)
+            if picked:
+                asset = str(picked.get("name") or "").strip()
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.info("asset auto-detect failed repo=%s: %s", repo, exc)
+
+    if not asset:
+        asset = f"{domain}.zip"
+
+    # Mirror-only install is allowed (repo may be empty).
+    entry = {
+        "domain": domain,
+        "repo": repo or "",
+        "asset": asset,
+        "label": label or domain,
+    }
+    return entry, None
 
 
 def _extract_release_zip(
@@ -287,37 +482,19 @@ async def _try_saas_mirror(
 ) -> dict[str, Any] | None:
     """Fetch latest package metadata + bytes from SaaS mirror; None if unavailable."""
     domain = entry["domain"]
-    meta_url = f"{cloud_base}/api/v1/agent/integration-mirrors/{domain}/latest"
-    try:
-        async with session.get(
-            meta_url, timeout=aiohttp.ClientTimeout(total=20)
-        ) as resp:
-            if resp.status >= 400:
-                _LOGGER.info(
-                    "UDHUB mirror miss domain=%s http=%s", domain, resp.status
-                )
-                return None
-            body = await resp.json(content_type=None)
-    except Exception as exc:  # noqa: BLE001
-        _LOGGER.info("UDHUB mirror meta failed domain=%s: %s", domain, exc)
+    pkg = await _fetch_saas_latest(session, cloud_base, domain)
+    if not pkg:
+        _LOGGER.info("UDHUB mirror miss domain=%s", domain)
         return None
 
-    pkg = body.get("package") if isinstance(body, dict) else None
-    if not isinstance(pkg, dict):
-        return None
     download_url = str(pkg.get("download_url") or "").strip()
     expected_sha = str(pkg.get("sha256") or "").strip().lower()
-    asset_name = str(pkg.get("asset") or entry["asset"]).strip()
+    asset_name = str(pkg.get("asset") or entry.get("asset") or "").strip()
     if not download_url or not expected_sha:
         return None
-    if asset_name != entry["asset"]:
-        _LOGGER.warning(
-            "UDHUB mirror asset mismatch domain=%s want=%s got=%s",
-            domain,
-            entry["asset"],
-            asset_name,
-        )
-        return None
+    if entry.get("asset") and asset_name and asset_name != entry["asset"]:
+        # Prefer SaaS asset name when catalog and request disagree.
+        entry["asset"] = asset_name
 
     try:
         async with session.get(
@@ -354,6 +531,7 @@ async def _try_saas_mirror(
         "version_hint": str(pkg.get("version") or ""),
         "source": "saas_mirror",
         "download_url": download_url,
+        "asset": asset_name or entry["asset"],
     }
 
 
@@ -361,64 +539,86 @@ async def _try_github_release(
     session: aiohttp.ClientSession,
     entry: dict[str, str],
 ) -> dict[str, Any]:
-    release = await _fetch_latest_release(session, entry["repo"])
+    repo = entry.get("repo") or ""
+    if not repo:
+        raise RuntimeError("repo_required_for_github")
+    release = await _fetch_latest_release(session, repo)
     tag = str(release.get("tag_name") or "")
-    asset = next(
-        (
-            a
-            for a in release.get("assets") or []
-            if a.get("name") == entry["asset"]
-        ),
-        None,
-    )
+    asset = _pick_release_asset(release, entry["domain"], entry.get("asset"))
     if not asset:
         raise RuntimeError("asset_not_found")
-    url = asset["browser_download_url"]
+    asset_name = str(asset.get("name") or entry.get("asset") or "")
+    primary = str(asset.get("browser_download_url") or "")
+    urls = [u for u in [
+        primary,
+        # Domestic / flaky GitHub fallbacks (same release asset).
+        f"https://ghfast.top/https://github.com/{repo}/releases/download/{tag}/{asset_name}",
+        f"https://ghproxy.net/https://github.com/{repo}/releases/download/{tag}/{asset_name}",
+    ] if u]
     digest_header = str(asset.get("digest") or "")
     expected_sha = (
         digest_header.removeprefix("sha256:").strip().lower() or None
     )
-    async with session.get(url, timeout=aiohttp.ClientTimeout(total=180)) as resp:
-        if resp.status >= 400:
-            raise RuntimeError(f"download_http_{resp.status}")
-        data = await resp.read()
-    if len(data) > MAX_ZIP_BYTES:
-        raise RuntimeError("asset_too_large")
+    data: bytes | None = None
+    used_url = ""
+    errors: list[str] = []
+    for url in urls:
+        try:
+            async with session.get(
+                url, timeout=aiohttp.ClientTimeout(total=300)
+            ) as resp:
+                if resp.status >= 400:
+                    errors.append(f"{url.split('://', 1)[0]}:http_{resp.status}")
+                    continue
+                chunk = await resp.read()
+            if len(chunk) > MAX_ZIP_BYTES:
+                errors.append("asset_too_large")
+                continue
+            data = chunk
+            used_url = url
+            break
+        except Exception as exc:  # noqa: BLE001
+            errors.append(str(exc))
+    if data is None:
+        raise RuntimeError("download_failed:" + ",".join(errors[:4]))
     digest = hashlib.sha256(data).hexdigest()
     if expected_sha and digest != expected_sha:
         raise RuntimeError("sha256_mismatch")
+    entry["asset"] = asset_name or entry["asset"]
     return {
         "data": data,
         "sha256": digest,
         "tag": tag,
         "version_hint": tag.lstrip("vV"),
         "source": "github",
-        "download_url": url,
+        "download_url": used_url,
+        "asset": entry["asset"],
     }
 
 
 async def install_repo(
     hass: HomeAssistant, payload: dict[str, Any]
 ) -> dict[str, Any]:
-    """Download curated package (SaaS mirror first) and extract into custom_components."""
+    """Download package (SaaS mirror first) and extract into custom_components."""
     if payload.get("confirm") is not True:
         return {
             "status": "denied",
             "error": "install_requires_confirm",
             "hint": "pass confirm=true after UI secondary confirmation",
         }
-    entry = _resolve_curated(payload)
-    if not entry:
-        return {
-            "status": "denied",
-            "error": "repo_not_in_allowlist",
-            "allowlist": [e["repo"] for e in CURATED_REPOS.values()],
-        }
 
     from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
     session = async_get_clientsession(hass)
     cloud_base = _cloud_base_url(hass)
+    entry, resolve_err = await _resolve_install_entry(session, cloud_base, payload)
+    if not entry:
+        return {
+            "status": "denied",
+            "error": resolve_err or "invalid_install_target",
+            "hint": "provide domain and/or GitHub owner/repo (+ optional asset)",
+        }
+
     prefer_github = str(payload.get("source") or "").lower() in (
         "github",
         "gh",
@@ -432,6 +632,13 @@ async def install_repo(
         if fetched is None:
             errors.append("saas_mirror_unavailable")
     if fetched is None:
+        if not entry.get("repo"):
+            return {
+                "status": "failed",
+                "error": "download_failed",
+                "detail": errors + ["repo_required_when_mirror_miss"],
+                "hint": "本库无此 domain，请提供 GitHub owner/repo",
+            }
         try:
             fetched = await _try_github_release(session, entry)
         except Exception as exc:  # noqa: BLE001
@@ -445,7 +652,7 @@ async def install_repo(
     data = fetched["data"]
     digest = fetched["sha256"]
     tag = fetched["tag"]
-    asset_name = entry["asset"]
+    asset_name = str(fetched.get("asset") or entry["asset"])
 
     config_path = _config_path(hass)
     if not config_path:
@@ -464,7 +671,6 @@ async def install_repo(
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
-    # Best-effort manifest version after extract
     manifest_path = (
         config_path
         / "custom_components"
@@ -478,7 +684,7 @@ async def install_repo(
         pass
 
     _LOGGER.info(
-        "UDHUB curated install ok domain=%s tag=%s source=%s",
+        "UDHUB library install ok domain=%s tag=%s source=%s",
         entry["domain"],
         tag,
         fetched.get("source"),
@@ -486,7 +692,7 @@ async def install_repo(
     return {
         "status": "ok",
         "domain": entry["domain"],
-        "repo": entry["repo"],
+        "repo": entry.get("repo") or None,
         "version": manifest_version or fetched.get("version_hint") or tag or "unknown",
         "release_tag": tag,
         "sha256": digest,
@@ -496,43 +702,54 @@ async def install_repo(
         "needs_restart": True,
         "hint": "restart HA (ha_system.restart) to load the new integration",
         "curated": _installed_curated(hass),
+        "policy": "mirror_or_github",
     }
 
 
 async def uninstall_repo(
     hass: HomeAssistant, payload: dict[str, Any]
 ) -> dict[str, Any]:
-    """Remove a curated integration directory (restart required to unload)."""
+    """Remove an integration directory under custom_components (restart to unload)."""
     if payload.get("confirm") is not True:
         return {
             "status": "denied",
             "error": "uninstall_requires_confirm",
             "hint": "pass confirm=true after UI secondary confirmation",
         }
-    entry = _resolve_curated(payload)
-    if not entry:
-        return {
-            "status": "denied",
-            "error": "repo_not_in_allowlist",
-            "allowlist": [e["repo"] for e in CURATED_REPOS.values()],
-        }
+
+    domain = _normalize_domain(str(payload.get("domain") or ""))
+    if not domain:
+        repo = _normalize_repo(
+            str(
+                payload.get("repository")
+                or payload.get("repo")
+                or payload.get("full_name")
+                or ""
+            )
+        )
+        known = _match_known(str(payload.get("repository") or payload.get("repo") or ""))
+        domain = (known["domain"] if known else None) or (
+            _domain_from_repo(repo) if repo else None
+        )
+    if not domain:
+        return {"status": "denied", "error": "domain_required"}
+    if domain == DOMAIN:
+        return {"status": "denied", "error": "cannot_uninstall_udhub_agent"}
+
     config_path = _config_path(hass)
     if not config_path:
         return {"status": "failed", "error": "config_dir_unavailable"}
-    target = config_path / "custom_components" / entry["domain"]
+    target = config_path / "custom_components" / domain
     if not target.is_dir():
         return {"status": "failed", "error": "not_installed"}
     await hass.async_add_executor_job(shutil.rmtree, target)
-    _LOGGER.info(
-        "UDHUB curated uninstall ok repo=%s domain=%s",
-        entry["repo"],
-        entry["domain"],
-    )
+    _LOGGER.info("UDHUB library uninstall ok domain=%s", domain)
     return {
         "status": "ok",
-        "domain": entry["domain"],
+        "domain": domain,
         "needs_restart": True,
         "curated": _installed_curated(hass),
+        "policy": "mirror_or_github",
     }
 
 
@@ -542,7 +759,6 @@ async def dispatch(hass: HomeAssistant, action: str, payload: dict[str, Any]) ->
     if action == "list":
         return await list_repos(hass, payload)
     if action in ("install", "update"):
-        # update == install latest release
         return await install_repo(hass, payload)
     if action == "uninstall":
         return await uninstall_repo(hass, payload)

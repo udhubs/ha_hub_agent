@@ -18,6 +18,33 @@ def _agent_version_from_manifest() -> str:
 AGENT_VERSION = _agent_version_from_manifest()
 PROTOCOL_VERSION = "0.1"
 DEFAULT_CLOUD_URL = "https://www.udhub.com"
+# HA 安装完成 / 待绑定状态：引导用户到官网注册并认领
+CONSOLE_CLAIM_HINT = (
+    "请打开 https://www.udhub.com 注册/登录并认领本机设备码。"
+)
+# 已连接后：二维码页引导前往注册页
+CONSOLE_CONNECTED_HINT = (
+    "前往 https://www.udhub.com/register 注册使用"
+)
+# HA「设备与服务」集成条目标题
+ENTRY_TITLE_PREFIX = "UDHub Agent"
+
+
+def entry_title(activation_key: str | None = None, *, pending: bool = False) -> str:
+    """Build config entry title: UDHub Agent 设备码 xxx-xx-xxx."""
+    key = (activation_key or "").strip()
+    if key:
+        base = f"{ENTRY_TITLE_PREFIX} 设备码 {key}"
+    else:
+        base = ENTRY_TITLE_PREFIX
+    if pending:
+        return f"{base} · 待认领"
+    return base
+
+
+# Back-compat aliases (static fallbacks; prefer entry_title())
+ENTRY_TITLE = ENTRY_TITLE_PREFIX
+ENTRY_TITLE_PENDING = f"{ENTRY_TITLE_PREFIX} · 待认领"
 CONF_CLOUD_URL = "cloud_url"
 CONF_GATEWAY_ID = "gateway_id"
 CONF_ACCESS_TOKEN = "access_token"
@@ -27,6 +54,9 @@ CONF_SETUP_ID = "setup_id"
 CONF_QR_PAYLOAD = "qr_payload"
 CONF_REFRESH_TOKEN = "refresh_token"
 CONF_ACTIVATION_ID = "activation_id"
+# Install-time secret proving this HA instance may poll for gateway tokens.
+# Never shown in the UI or QR. Old entries lack it and must be re-activated.
+CONF_DEVICE_SECRET = "device_secret"
 
 # Pending setup: HA finished; waiting for SaaS claim
 CLAIM_STATUS_PENDING = "pending"
@@ -75,6 +105,7 @@ ALLOWED_DOMAINS = {
     "climate",
     "cover",
     "fan",
+    "media_player",
     "homeassistant",
     # Input / helper
     "input_boolean",
@@ -101,7 +132,6 @@ ALLOWED_DOMAINS = {
 EXTENDED_DOMAINS = ALLOWED_DOMAINS | {
     # Advanced control
     "vacuum",
-    "media_player",
     "humidifier",
     "water_heater",
     "camera",

@@ -23,13 +23,20 @@ async def poll_activation_once(
     *,
     activation_id: str | None,
     activation_key: str | None,
+    device_secret: str | None = None,
 ) -> dict[str, Any] | None:
-    """One poll by activation_id or code. Returns payload or None."""
+    """One poll by activation_id or code. Returns payload or None.
+
+    device_secret is the install-time proof that this HA instance started
+    the activation. Without it the cloud will not return gateway tokens.
+    """
     base = cloud_url.rstrip("/")
+    proof = {"device_secret": device_secret} if device_secret else {}
     try:
         if activation_id:
             async with session.post(
                 f"{base}/api/v1/agent/activation/{activation_id}/poll",
+                json=proof,
                 timeout=aiohttp.ClientTimeout(total=8),
             ) as resp:
                 if resp.status >= 400:
@@ -41,7 +48,7 @@ async def poll_activation_once(
 
         async with session.post(
             f"{base}/api/v1/agent/activation/poll-by-code",
-            json={"activation_code": activation_key},
+            json={"activation_code": activation_key, **proof},
             timeout=aiohttp.ClientTimeout(total=8),
         ) as resp:
             if resp.status >= 400:

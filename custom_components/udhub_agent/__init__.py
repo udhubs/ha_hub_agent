@@ -21,18 +21,20 @@ from .notify import create_notification
 from .const import (
     CLAIM_POLL_INTERVAL_SEC,
     CLAIM_STATUS_CLAIMED,
-    CLAIM_STATUS_PENDING,
     CLAIM_WAIT_TIMEOUT_SEC,
     CONF_ACCESS_TOKEN,
     CONF_ACTIVATION_ID,
     CONF_ACTIVATION_KEY,
     CONF_CLAIM_STATUS,
     CONF_CLOUD_URL,
+    CONF_DEVICE_SECRET,
     CONF_GATEWAY_ID,
     CONF_REFRESH_TOKEN,
     CONF_SETUP_ID,
     CONF_USER_CODE,
+    CONSOLE_CLAIM_HINT,
     DOMAIN,
+    entry_title,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -42,6 +44,20 @@ PLATFORMS: list[Platform] = []
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})
+
+    # Normalize legacy titles like "UDHUB gw_xxx" → "UDHub Agent 设备码 …"
+    key = str(
+        entry.data.get(CONF_ACTIVATION_KEY)
+        or entry.data.get(CONF_USER_CODE)
+        or ""
+    ).strip()
+    pending = not (
+        entry.data.get(CONF_ACCESS_TOKEN) and entry.data.get(CONF_GATEWAY_ID)
+    )
+    desired_title = entry_title(key, pending=pending)
+    if entry.title != desired_title:
+        hass.config_entries.async_update_entry(entry, title=desired_title)
+
     client = UdhubCloudClient(hass, entry)
     hass.data[DOMAIN][entry.entry_id] = {
         "gateway_id": entry.data.get(CONF_GATEWAY_ID),
@@ -125,11 +141,19 @@ async def _wait_for_saas_claim(hass: HomeAssistant, entry: ConfigEntry) -> None:
             cloud_url,
             activation_id=str(activation_id) if activation_id else None,
             activation_key=activation_key or None,
+            device_secret=str(entry.data.get(CONF_DEVICE_SECRET) or "") or None,
         )
         if data and data.get("activation_id") and not activation_id:
             activation_id = data["activation_id"]
 
         if data and data.get("status") == "claimed":
+            if not data.get("access_token"):
+                _LOGGER.error(
+                    "UDHUB claim tokens were already delivered for %s; "
+                    "re-add the integration to pair again",
+                    activation_id,
+                )
+                return
             gateway_id = data["gateway_id"]
             new_data = {
                 **entry.data,
@@ -142,12 +166,12 @@ async def _wait_for_saas_claim(hass: HomeAssistant, entry: ConfigEntry) -> None:
             hass.config_entries.async_update_entry(
                 entry,
                 data=new_data,
-                title=f"UDHUB {gateway_id}",
+                title=entry_title(activation_key),
             )
             setup_id = entry.data.get(CONF_SETUP_ID) or gateway_id
             await create_notification(
                 hass,
-                title="UDHUB Agent 已连接云枢",
+                title="UDHub Agent 已连接云枢",
                 message=(
                     f"主机 **{gateway_id}** 已由控制台认领并自动接入。\n\n"
                     f"设备码：**{activation_key}**"
@@ -172,11 +196,12 @@ async def _wait_for_saas_claim(hass: HomeAssistant, entry: ConfigEntry) -> None:
     )
     await create_notification(
         hass,
-        title="UDHUB Agent 认领超时",
+        title="UDHub Agent 认领超时",
         message=(
             f"设备码 **{activation_key}** 在约 "
             f"{CLAIM_WAIT_TIMEOUT_SEC // 60} 分钟内未被认领。\n\n"
-            "请在云枢重新认领，或于「UDHUB Agent → 配置」重新生成激活码。"
+            f"{CONSOLE_CLAIM_HINT}\n"
+            "或于「UDHub Agent → 配置」重新生成激活码。"
         ),
         notification_id=f"{DOMAIN}_claim_timeout_{entry.entry_id}",
     )

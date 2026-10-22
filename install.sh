@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# UDHUB Agent — install into Home Assistant config (doc 21 / brands·Gitee 分发)
+# UDHub Agent — install into Home Assistant config (doc 21 / brands·Gitee 分发)
 #
 # Preferred (SaaS):
 #   curl -fsSL https://www.udhub.com/agent/install.sh | bash -s -- /config
@@ -115,6 +115,6 @@ rm -rf "$COMPONENT_DST"
 cp -R "$SRC" "$COMPONENT_DST"
 VER="$(python3 -c "import json;print(json.load(open('${COMPONENT_DST}/manifest.json')).get('version',''))" 2>/dev/null || true)"
 log "installed ${VER:-unknown} → ${COMPONENT_DST}"
-log "请在 HA：设置 → 系统 → 重启 后添加集成「UDHUB Agent」"
+log "请在 HA：设置 → 系统 → 重启 后添加集成「UDHub Agent」"
 log "云端 URL 默认 https://www.udhub.com"
 log "切源：UDHUB_SOURCE=gitee|github|auto · 锁版本：UDHUB_VERSION=v${VER:-X.Y.Z}"

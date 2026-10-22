@@ -224,9 +224,8 @@ def _udhub_scene_states(hass: HomeAssistant) -> list[str]:
     return sorted(ids)
 
 
-async def probe_packages(hass: HomeAssistant) -> dict[str, Any]:
-    """Snapshot: whether configuration.yaml loads config/packages/."""
-    config_dir, cfg_path, packages_dir = _config_paths(hass)
+def _scan_packages_tree(cfg_path: str, packages_dir: str) -> dict[str, Any]:
+    """Read configuration.yaml and list config/packages off the event loop."""
     text = _read_text(cfg_path)
     ha_targets = _ha_block_packages_targets(text or "")
     root_targets = _root_level_packages_targets(text or "")
@@ -256,6 +255,50 @@ async def probe_packages(hass: HomeAssistant) -> dict[str, Any]:
                 sample_file = name
                 sample_head = (_read_text(os.path.join(packages_dir, name)) or "")[:240]
                 break
+    return {
+        "text": text,
+        "ha_targets": ha_targets,
+        "root_targets": root_targets,
+        "include_ok": include_ok,
+        "dir_exists": dir_exists,
+        "files": files,
+        "all_entries": all_entries,
+        "sample_file": sample_file,
+        "sample_head": sample_head,
+    }
+
+
+def _mkdir_packages(packages_dir: str) -> None:
+    os.makedirs(packages_dir, exist_ok=True)
+
+
+def _write_packages_include(cfg_path: str, new_text: str) -> list[str]:
+    """Backup configuration.yaml once, then replace it atomically."""
+    actions: list[str] = []
+    bak = f"{cfg_path}.bak.udhub"
+    if not os.path.exists(bak):
+        shutil.copy2(cfg_path, bak)
+        actions.append("backup_configuration_yaml")
+    tmp = f"{cfg_path}.tmp.udhub"
+    with open(tmp, "w", encoding="utf-8") as handle:
+        handle.write(new_text)
+    os.replace(tmp, cfg_path)
+    return actions
+
+
+async def probe_packages(hass: HomeAssistant) -> dict[str, Any]:
+    """Snapshot: whether configuration.yaml loads config/packages/."""
+    config_dir, cfg_path, packages_dir = _config_paths(hass)
+    scan = await hass.async_add_executor_job(_scan_packages_tree, cfg_path, packages_dir)
+    text = scan["text"]
+    ha_targets = scan["ha_targets"]
+    root_targets = scan["root_targets"]
+    include_ok = scan["include_ok"]
+    dir_exists = scan["dir_exists"]
+    files = scan["files"]
+    all_entries = scan["all_entries"]
+    sample_file = scan["sample_file"]
+    sample_head = scan["sample_head"]
     scene_ids = sorted(s.entity_id for s in hass.states.async_all("scene"))[:40]
     check_errors: list[str] = []
     try:
@@ -319,7 +362,7 @@ async def ensure_packages(hass: HomeAssistant) -> dict[str, Any]:
 
     if not probe.get("packages_dir_exists"):
         try:
-            os.makedirs(packages_dir, exist_ok=True)
+            await hass.async_add_executor_job(_mkdir_packages, packages_dir)
             actions.append("mkdir_packages")
         except OSError as exc:
             return {
@@ -331,7 +374,7 @@ async def ensure_packages(hass: HomeAssistant) -> dict[str, Any]:
 
     patched = False
     if not probe.get("include_ok"):
-        text = _read_text(cfg_path)
+        text = await hass.async_add_executor_job(_read_text, cfg_path)
         if text is None:
             return {
                 **probe,
@@ -341,15 +384,12 @@ async def ensure_packages(hass: HomeAssistant) -> dict[str, Any]:
             }
         new_text, action = _inject_packages_include(text)
         if action != "none":
-            bak = f"{cfg_path}.bak.udhub"
             try:
-                if not os.path.exists(bak):
-                    shutil.copy2(cfg_path, bak)
-                    actions.append("backup_configuration_yaml")
-                tmp = f"{cfg_path}.tmp.udhub"
-                with open(tmp, "w", encoding="utf-8") as f:
-                    f.write(new_text)
-                os.replace(tmp, cfg_path)
+                actions.extend(
+                    await hass.async_add_executor_job(
+                        _write_packages_include, cfg_path, new_text
+                    )
+                )
                 actions.append(f"packages_include_{action}")
                 patched = True
             except OSError as exc:

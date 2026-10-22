@@ -15,6 +15,13 @@ _LOGGER = logging.getLogger(__name__)
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 
 
+def _read_local_blueprint(path: str) -> str | None:
+    file_path = Path(path)
+    if not file_path.is_file():
+        return None
+    return file_path.read_text()
+
+
 def _slugify_name(name: str, fallback: str = "item") -> str:
     raw = str(name or fallback).strip().lower()
     ascii_slug = _SLUG_RE.sub("_", raw).strip("_")[:40]
@@ -1114,8 +1121,13 @@ async def dispatch_blueprint(hass: HomeAssistant, action: str, payload: dict[str
 
         # Download on the event loop (async), write on the executor.
         text = ""
-        if str(url).startswith("/") and Path(str(url)).is_file():
-            text = Path(str(url)).read_text()
+        local_text = None
+        if str(url).startswith("/"):
+            local_text = await hass.async_add_executor_job(
+                _read_local_blueprint, str(url)
+            )
+        if local_text is not None:
+            text = local_text
         else:
             try:
                 import aiohttp

@@ -1,4 +1,4 @@
-"""UDHUB Agent 激活码生成 — HomeKit 风格 8 位数字 XXX-XX-XXX。
+"""UDHub Agent 激活码生成 — HomeKit 风格 8 位数字 XXX-XX-XXX。
 
 对齐 doc/19 §2：Agent 侧本地生成激活码（模拟物理标签），
 上报云端后由控制台读取展示。
@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-import random
 import secrets
 import string
 from urllib.parse import quote
@@ -49,6 +48,14 @@ def generate_setup_id() -> str:
 def generate_install_nonce() -> str:
     """生成安装随机数（用于 QR payload 防重放）。"""
     return secrets.token_hex(16)
+
+
+def generate_device_secret() -> str:
+    """Secret held only by this HA instance. Required to poll gateway tokens.
+
+    Not embedded in the QR or the user-visible activation code.
+    """
+    return secrets.token_hex(32)
 
 
 def build_qr_payload(
@@ -123,6 +130,7 @@ def create_activation_session(
     activation_key = generate_homekit_code()
     setup_id = generate_setup_id()
     install_nonce = generate_install_nonce()
+    device_secret = generate_device_secret()
     qr_payload = build_qr_payload(
         activation_key=activation_key,
         setup_id=setup_id,
@@ -141,4 +149,5 @@ def create_activation_session(
         "agent_version": agent_version,
         "ha_version": ha_version,
         "install_type": install_type,
+        "device_secret": device_secret,
     }

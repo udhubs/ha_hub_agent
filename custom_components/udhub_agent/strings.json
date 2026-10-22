@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "连接云枢",
-        "description": "选择配对方式后点 **提交**：\n\n• **出示激活码（推荐）**：下一步会生成本机 **二维码 + 8 位设备码**，再在云枢控制台认领。\n\n• **输入云端激活码**：解绑后再绑时使用（在下方「云端激活码」填写）。",
+        "description": "选择配对方式后点 **提交**：\n\n• **出示激活码（推荐）**：下一步会生成本机 **二维码 + 8 位设备码**。\n\n• **输入云端激活码**：解绑后再绑时使用（在下方「云端激活码」填写）。\n\n**请打开 https://www.udhub.com 注册/登录并认领本机设备码。**",
         "data": {
           "cloud_url": "云枢云端 URL",
           "bind_mode": "配对方式",
@@ -12,16 +12,16 @@
         }
       },
       "activation": {
-        "title": "设备码（待云枢认领）",
-        "description": "本机已准备好接入。请抄写 **8 位设备码**，点击 **提交** 完成添加。\n\n然后在云枢控制台「认领项目」输入该码；认领成功后 Agent **自动连接**。\n\n**设备码**：`{user_code}`\n\n**有效期**：{expires_minutes}\n\n{claim_status}",
+        "title": "设备码（待绑定）",
+        "description": "**请打开 https://www.udhub.com 注册/登录并认领本机设备码。**\n\n本机已准备好接入。请抄写下方 **8 位设备码**（或扫码），点击 **提交** 完成添加；绑定成功后 Agent **自动连接**。\n\n**设备码**：`{user_code}`\n\n**有效期**：{expires_minutes}\n\n{claim_status}",
         "data": {
-          "activation_qr": "扫码认领",
+          "activation_qr": "设备码二维码",
           "activation_code": "设备码（8 位，可复制）"
         }
       },
       "success": {
         "title": "已连接云枢",
-        "description": "✅ **连接成功**（类似 HomeKit 添加完成提示）\n\n**主机 ID**：`{gateway_id}`\n\n**设备码**：`{user_code}`\n\n下方仍可查看二维码与设备码。点击 **完成** 结束配置；通知已发送至 Home Assistant。",
+        "description": "设备码 **{user_code}**\n\n✅ **已连接云枢** · 云端\n\n前往 https://www.udhub.com/register 注册使用\n\n主机 ID：`{gateway_id}`\n\n下方仍可查看二维码与设备码。点击 **完成** 结束配置。",
         "data": {
           "activation_qr": "二维码",
           "activation_code": "设备码"
@@ -30,7 +30,7 @@
     },
     "error": {
       "cannot_connect": "无法连接云枢云端",
-      "not_yet_claimed": "尚未认领，请确认控制台已操作后重试",
+      "not_yet_claimed": "尚未认领，请确认已在 https://www.udhub.com 完成操作后重试",
       "required": "请填写云端激活码"
     },
     "abort": {
@@ -40,19 +40,19 @@
   "options": {
     "step": {
       "init": {
-        "title": "UDHUB Agent",
-        "description": "主机 **{gateway_id}** · 设备码 **{user_code}**\n\n{claim_status}",
+        "title": "UDHub Agent",
+        "description": "设备码 **{user_code}**\n\n{claim_status}",
         "data": {
-          "activation_qr": "扫码认领",
+          "activation_qr": "设备码二维码",
           "activation_code": "设备码（8 位，可复制）",
           "action": "绑定云端出示码"
         }
       },
       "view_label": {
         "title": "激活标签",
-        "description": "主机 **{gateway_id}** · 设备码 **{user_code}**",
+        "description": "设备码 **{user_code}**\n\n{claim_status}",
         "data": {
-          "activation_qr": "扫码认领",
+          "activation_qr": "设备码二维码",
           "activation_code": "设备码"
         }
       },

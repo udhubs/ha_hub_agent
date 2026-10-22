@@ -20,7 +20,7 @@ from homeassistant.helpers import selector
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.const import __version__ as HA_VERSION
 
-from .activation import create_activation_session
+from .activation import create_activation_session, generate_device_secret
 from .claim_poll import poll_activation_once, unwrap_payload
 from .notify import create_notification
 from .const import (
@@ -34,20 +34,22 @@ from .const import (
     CONF_BIND_SOURCE,
     CONF_CLAIM_STATUS,
     CONF_CLOUD_URL,
+    CONF_DEVICE_SECRET,
     CONF_GATEWAY_ID,
     CONF_QR_PAYLOAD,
     CONF_REFRESH_TOKEN,
     CONF_SETUP_ID,
     CONF_USER_CODE,
+    CONSOLE_CLAIM_HINT,
     DEFAULT_CLOUD_URL,
     DOMAIN,
+    entry_title,
     AGENT_VERSION,
 )
 from .label_ui import (
     activation_label_schema,
     activation_key_from_entry,
     ensure_qr_payload,
-    finish_step_schema,
     label_description_placeholders,
     options_bind_state,
     options_init_schema,
@@ -64,6 +66,7 @@ def _pending_entry_data(
     setup_id: str,
     qr_payload: str | None,
     activation_id: str | None,
+    device_secret: str | None,
     bind_source: str = BIND_SOURCE_LOCAL,
 ) -> dict[str, Any]:
     return {
@@ -73,6 +76,7 @@ def _pending_entry_data(
         CONF_SETUP_ID: setup_id,
         CONF_QR_PAYLOAD: qr_payload,
         CONF_ACTIVATION_ID: activation_id,
+        CONF_DEVICE_SECRET: device_secret,
         CONF_CLAIM_STATUS: CLAIM_STATUS_PENDING,
         CONF_BIND_SOURCE: bind_source,
     }
@@ -86,6 +90,7 @@ def _claimed_entry_data(
     setup_id: str | None,
     qr_payload: str | None,
     activation_id: str | None,
+    device_secret: str | None = None,
     bind_source: str | None = None,
 ) -> dict[str, Any]:
     data = {
@@ -98,6 +103,7 @@ def _claimed_entry_data(
         CONF_SETUP_ID: setup_id,
         CONF_QR_PAYLOAD: qr_payload,
         CONF_ACTIVATION_ID: activation_id or claimed.get("activation_id"),
+        CONF_DEVICE_SECRET: device_secret,
         CONF_CLAIM_STATUS: CLAIM_STATUS_CLAIMED,
     }
     if bind_source:
@@ -124,6 +130,7 @@ async def _report_activation_to_cloud(
             "install_type": session_data["install_type"],
             "key_version": session_data["key_version"],
             "expires_in": session_data["expires_in"],
+            "device_secret": session_data.get("device_secret"),
         },
         timeout=aiohttp.ClientTimeout(total=15),
     ) as resp:
@@ -145,6 +152,7 @@ class UdhubAgentConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._setup_id: str | None = None
         self._phone: str | None = None
         self._bind_mode = "show"
+        self._device_secret: str | None = None
 
     def _existing_entry(self) -> config_entries.ConfigEntry | None:
         """Entry being updated during reauth / reconfigure."""
@@ -184,6 +192,7 @@ class UdhubAgentConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     if not cloud_code:
                         errors["activation_code"] = "required"
                     else:
+                        self._device_secret = generate_device_secret()
                         async with session.post(
                             f"{self._cloud_url}/api/v1/agent/activation/bind",
                             json={
@@ -193,6 +202,7 @@ class UdhubAgentConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                                 "ha_version": HA_VERSION,
                                 "install_type": "Home Assistant OS",
                                 "key_version": "v2",
+                                "device_secret": self._device_secret,
                             },
                             timeout=aiohttp.ClientTimeout(total=15),
                         ) as resp:
@@ -220,8 +230,13 @@ class UdhubAgentConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                                         self._cloud_url,
                                         activation_id=self._activation_id,
                                         activation_key=self._activation_key,
+                                        device_secret=self._device_secret,
                                     )
-                                    if claimed and claimed.get("status") == "claimed":
+                                    if (
+                                        claimed
+                                        and claimed.get("status") == "claimed"
+                                        and claimed.get("access_token")
+                                    ):
                                         return await self._create_claimed_entry(
                                             claimed
                                         )
@@ -236,6 +251,7 @@ class UdhubAgentConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     self._activation_key = session_data["activation_key"]
                     self._qr_payload = session_data["qr_payload"]
                     self._setup_id = session_data["setup_id"]
+                    self._device_secret = session_data.get("device_secret")
                     self._activation_id = await _report_activation_to_cloud(
                         session, self._cloud_url, session_data, self._phone
                     )
@@ -287,8 +303,9 @@ class UdhubAgentConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._activation_key,
             qr_payload,
             claim_status=(
-                "记下设备码后点击 **提交** 完成添加。然后在云枢「认领项目」输入该码；"
-                "设备码长期有效，认领成功后 Agent 自动连接。"
+                f"**{CONSOLE_CLAIM_HINT}**\n\n"
+                "记下设备码后点击 **提交** 完成添加。"
+                "设备码长期有效，绑定成功后 Agent 自动连接。"
             ),
         )
 
@@ -311,18 +328,19 @@ class UdhubAgentConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             setup_id=self._setup_id,
             qr_payload=self._qr_payload,
             activation_id=self._activation_id,
+            device_secret=self._device_secret,
             bind_source=bind_source,
         )
-        title = f"UDHUB 待认领 {self._activation_key}"
+        title = entry_title(self._activation_key, pending=True)
         unique = f"pending:{self._setup_id}"
 
         await create_notification(
             self.hass,
-            title="UDHUB Agent 待认领",
+            title="UDHub Agent 待认领",
             message=(
+                f"**{CONSOLE_CLAIM_HINT}**\n\n"
                 f"设备码：**{self._activation_key}**\n\n"
-                "请在云枢控制台「认领项目」输入该码。"
-                "认领成功后本机会自动连接，无需再操作。"
+                "⏳ **待绑定** — 绑定成功后本机会自动连接，无需再操作。"
             ),
             notification_id=f"{DOMAIN}_pending_{self._setup_id}",
         )
@@ -356,13 +374,14 @@ class UdhubAgentConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             setup_id=self._setup_id,
             qr_payload=self._qr_payload,
             activation_id=self._activation_id,
+            device_secret=self._device_secret,
             bind_source=bind_source,
         )
-        title = f"UDHUB {gateway_id}"
+        title = entry_title(self._activation_key)
 
         await create_notification(
             self.hass,
-            title="UDHUB Agent 已连接云枢",
+            title="UDHub Agent 已连接云枢",
             message=(
                 f"主机 **{gateway_id}** 已成功接入。\n\n"
                 f"设备码：**{self._activation_key}**"
@@ -484,6 +503,7 @@ class UdhubAgentOptionsFlowHandler(config_entries.OptionsFlow):
                 errors={"base": "no_label"},
             )
 
+        bind_state = options_bind_state(entry_data, dict(self.config_entry.options))
         return self.async_show_form(
             step_id="view_label",
             data_schema=activation_label_schema(
@@ -495,6 +515,7 @@ class UdhubAgentOptionsFlowHandler(config_entries.OptionsFlow):
                 activation_key,
                 qr_payload,
                 gateway_id=gateway_id,
+                claim_status=bind_state["claim_status"],
             ),
             last_step=False,
         )
@@ -513,6 +534,7 @@ class UdhubAgentOptionsFlowHandler(config_entries.OptionsFlow):
             else:
                 session = async_get_clientsession(self.hass)
                 try:
+                    device_secret = generate_device_secret()
                     async with session.post(
                         f"{cloud_url}/api/v1/agent/activation/bind",
                         json={
@@ -521,6 +543,7 @@ class UdhubAgentOptionsFlowHandler(config_entries.OptionsFlow):
                             "ha_version": HA_VERSION,
                             "install_type": "Home Assistant OS",
                             "key_version": "v2",
+                            "device_secret": device_secret,
                         },
                         timeout=aiohttp.ClientTimeout(total=15),
                     ) as resp:
@@ -559,8 +582,9 @@ class UdhubAgentOptionsFlowHandler(config_entries.OptionsFlow):
                                     cloud_url,
                                     activation_id=activation_id,
                                     activation_key=activation_key,
+                                    device_secret=device_secret,
                                 )
-                                if claimed and claimed.get("status") == "claimed":
+                                if claimed and claimed.get("status") == "claimed" and claimed.get("access_token"):
                                     new_data = _claimed_entry_data(
                                         cloud_url=cloud_url,
                                         claimed=claimed,
@@ -568,12 +592,13 @@ class UdhubAgentOptionsFlowHandler(config_entries.OptionsFlow):
                                         setup_id=setup_id,
                                         qr_payload=qr_payload,
                                         activation_id=activation_id,
+                                        device_secret=device_secret,
                                         bind_source=BIND_SOURCE_CLOUD,
                                     )
                                     self.hass.config_entries.async_update_entry(
                                         entry,
                                         data=new_data,
-                                        title=f"UDHUB {claimed['gateway_id']}",
+                                        title=entry_title(activation_key),
                                         unique_id=claimed["gateway_id"],
                                     )
                                     await self.hass.config_entries.async_reload(
@@ -592,6 +617,7 @@ class UdhubAgentOptionsFlowHandler(config_entries.OptionsFlow):
                                 setup_id=setup_id,
                                 qr_payload=qr_payload,
                                 activation_id=activation_id,
+                                device_secret=device_secret,
                                 bind_source=BIND_SOURCE_CLOUD,
                             )
                             new_data = {**entry.data, **pending_data}
@@ -604,7 +630,7 @@ class UdhubAgentOptionsFlowHandler(config_entries.OptionsFlow):
                             self.hass.config_entries.async_update_entry(
                                 entry,
                                 data=new_data,
-                                title=f"UDHUB 待认领 {activation_key}",
+                                title=entry_title(activation_key, pending=True),
                                 unique_id=f"pending:{setup_id}",
                             )
                             await self.hass.config_entries.async_reload(
@@ -630,7 +656,10 @@ class UdhubAgentOptionsFlowHandler(config_entries.OptionsFlow):
             ),
             errors=errors,
             description_placeholders={
-                "hint": "输入服务商在云枢控制台生成的激活码，格式 XXX-XX-XXX",
+                "hint": (
+                    "输入服务商在云枢控制台生成的激活码（格式 XXX-XX-XXX）。"
+                    "也可打开 https://www.udhub.com 注册/登录后认领本机设备码。"
+                ),
             },
             last_step=False,
         )

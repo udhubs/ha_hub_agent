@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from homeassistant.core import HomeAssistant
@@ -480,6 +481,90 @@ async def _integration(hass: HomeAssistant, action: str, payload: dict[str, Any]
     return {"status": "failed", "error": "unsupported_action"}
 
 
+def _local_username_for_user(user: Any) -> str | None:
+    """Resolve homeassistant auth-provider username for a User."""
+    for cred in getattr(user, "credentials", None) or []:
+        if getattr(cred, "auth_provider_type", None) != "homeassistant":
+            continue
+        data = getattr(cred, "data", None) or {}
+        username = data.get("username")
+        if username:
+            return str(username)
+    name = getattr(user, "name", None)
+    return str(name).strip() if name else None
+
+
+async def _hass_auth_provider(hass: HomeAssistant) -> Any | None:
+    from homeassistant.auth.providers import homeassistant as hass_auth
+
+    for provider in hass.auth.auth_providers:
+        if isinstance(provider, hass_auth.HassAuthProvider):
+            if getattr(provider, "data", None) is None:
+                await provider.async_initialize()
+            return provider
+    return None
+
+
+async def _change_ha_login_password(
+    hass: HomeAssistant,
+    *,
+    user_id: str | None,
+    username: str | None,
+    password: str,
+) -> dict[str, Any]:
+    pwd = str(password or "")
+    if len(pwd) < 8:
+        return {
+            "status": "failed",
+            "error": "password_too_short",
+            "hint": "HA local password must be at least 8 characters",
+        }
+
+    provider = await _hass_auth_provider(hass)
+    if provider is None:
+        return {
+            "status": "failed",
+            "error": "homeassistant_auth_provider_missing",
+            "hint": "Only local Home Assistant users support password change",
+        }
+
+    resolved_username = (username or "").strip() or None
+    target_user_id = (user_id or "").strip() or None
+    if target_user_id:
+        users = await hass.auth.async_get_users()
+        target = next((u for u in users if u.id == target_user_id), None)
+        if not target:
+            return {"status": "failed", "error": "user_not_found"}
+        resolved_username = _local_username_for_user(target)
+        if not resolved_username:
+            return {
+                "status": "failed",
+                "error": "no_local_username",
+                "hint": "User has no homeassistant login credential",
+            }
+    if not resolved_username:
+        return {"status": "failed", "error": "missing_user_id_or_username"}
+
+    try:
+        await provider.async_change_password(resolved_username, pwd)
+    except Exception as exc:  # noqa: BLE001 — surface provider errors
+        err_name = type(exc).__name__
+        if "InvalidUser" in err_name or "not found" in str(exc).lower():
+            return {
+                "status": "failed",
+                "error": "auth_user_not_found",
+                "username": resolved_username,
+            }
+        return {"status": "failed", "error": str(exc), "username": resolved_username}
+
+    return {
+        "status": "ok",
+        "username": resolved_username,
+        "user_id": target_user_id,
+        "password_changed": True,
+    }
+
+
 async def _user(hass: HomeAssistant, action: str, payload: dict[str, Any]) -> dict[str, Any]:
     if action == "list":
         users = await hass.auth.async_get_users()
@@ -489,9 +574,11 @@ async def _user(hass: HomeAssistant, action: str, payload: dict[str, Any]) -> di
                 {
                     "id": u.id,
                     "name": u.name,
+                    "username": _local_username_for_user(u),
                     "is_active": u.is_active,
                     "is_owner": u.is_owner,
                     "group_ids": [g.id for g in u.groups],
+                    "has_local_login": _local_username_for_user(u) is not None,
                 }
                 for u in users
             ],
@@ -500,8 +587,44 @@ async def _user(hass: HomeAssistant, action: str, payload: dict[str, Any]) -> di
         name = payload.get("name")
         if not name:
             return {"status": "failed", "error": "missing_name"}
+        username = str(payload.get("username") or name).strip()
+        password = payload.get("password")
         user = await hass.auth.async_create_user(str(name), local_only=False)
-        return {"status": "ok", "user_id": user.id, "name": name}
+        if password:
+            provider = await _hass_auth_provider(hass)
+            if provider is None:
+                return {
+                    "status": "failed",
+                    "error": "homeassistant_auth_provider_missing",
+                    "user_id": user.id,
+                }
+            if len(str(password)) < 8:
+                return {
+                    "status": "failed",
+                    "error": "password_too_short",
+                    "user_id": user.id,
+                }
+            try:
+                await provider.async_add_auth(username, str(password))
+                try:
+                    cred = await provider.async_get_or_create_credentials(
+                        {"username": username}
+                    )
+                    await hass.auth.async_link_user(user, cred)
+                except Exception:
+                    pass
+            except Exception as exc:
+                return {
+                    "status": "failed",
+                    "error": str(exc),
+                    "user_id": user.id,
+                }
+        return {
+            "status": "ok",
+            "user_id": user.id,
+            "name": name,
+            "username": username if password else None,
+        }
     if action == "delete":
         user_id = payload.get("user_id")
         if not user_id:
@@ -514,6 +637,13 @@ async def _user(hass: HomeAssistant, action: str, payload: dict[str, Any]) -> di
             return {"status": "denied", "error": "cannot_delete_owner"}
         await hass.auth.async_remove_user(target)
         return {"status": "ok", "user_id": user_id}
+    if action == "change_password":
+        return await _change_ha_login_password(
+            hass,
+            user_id=str(payload.get("user_id") or "") or None,
+            username=str(payload.get("username") or "") or None,
+            password=str(payload.get("password") or payload.get("new_password") or ""),
+        )
     if action == "update":
         user_id = payload.get("user_id")
         if not user_id:
@@ -524,7 +654,8 @@ async def _user(hass: HomeAssistant, action: str, payload: dict[str, Any]) -> di
             return {"status": "failed", "error": "user_not_found"}
         name = payload.get("name")
         group_ids = payload.get("group_ids")
-        if name is None and group_ids is None:
+        password = payload.get("password") or payload.get("new_password")
+        if name is None and group_ids is None and not password:
             return {"status": "failed", "error": "nothing_to_update"}
         changed = False
         if name is not None and str(name).strip():
@@ -537,12 +668,27 @@ async def _user(hass: HomeAssistant, action: str, payload: dict[str, Any]) -> di
                 return {"status": "failed", "error": "unknown_group"}
             target.groups = resolved
             changed = True
+        if password:
+            pw_result = await _change_ha_login_password(
+                hass,
+                user_id=str(user_id),
+                username=None,
+                password=str(password),
+            )
+            if pw_result.get("status") != "ok":
+                return pw_result
+            changed = True
         if not changed:
             return {"status": "failed", "error": "nothing_to_update"}
         store = getattr(hass.auth, "_store", None)
-        if store is not None:
+        if store is not None and (name is not None or isinstance(group_ids, list)):
             await store.async_schedule_save()
-        return {"status": "ok", "user_id": user_id, "name": target.name}
+        return {
+            "status": "ok",
+            "user_id": user_id,
+            "name": target.name,
+            "password_changed": bool(password),
+        }
     return {"status": "failed", "error": "unsupported_action"}
 
 
@@ -621,6 +767,29 @@ async def _ha_system(hass: HomeAssistant, action: str, payload: dict[str, Any]) 
         except Exception:  # noqa: BLE001
             pass
 
+        def _is_localish(url: str | None) -> bool:
+            if not url:
+                return True
+            return bool(
+                re.search(
+                    r"homeassistant\.local|localhost|127\.0\.0\.1|\.local(:|/|$)",
+                    str(url),
+                    re.I,
+                )
+            )
+
+        oauth_reachable_candidates: list[str] = []
+        for cand in (external, get_url_value, internal):
+            s = str(cand or "").strip().rstrip("/")
+            if not s or _is_localish(s):
+                continue
+            if s not in oauth_reachable_candidates:
+                oauth_reachable_candidates.append(s)
+        for ip in lan_candidates:
+            base = f"http://{ip}:8123"
+            if base not in oauth_reachable_candidates:
+                oauth_reachable_candidates.append(base)
+
         units = getattr(hass.config, "units", None)
         unit_name = None
         if units is not None:
@@ -644,11 +813,17 @@ async def _ha_system(hass: HomeAssistant, action: str, payload: dict[str, Any]) 
                 "internal_url": internal,
                 "get_url": get_url_value,
                 "lan_candidates": lan_candidates,
+                "oauth_reachable_candidates": oauth_reachable_candidates,
                 "version": getattr(hass.config, "version", None)
                 and str(hass.config.version),
                 # Xiaomi Home registers this fixed redirect with Mi OAuth;
                 # remote SaaS browsers must resolve it to the field HA.
+                # Manufacturer hard-codes this — cannot be changed by Agent.
                 "xiaomi_oauth_redirect_base": "http://homeassistant.local:8123",
+                "xiaomi_oauth_note": (
+                    "回调写死 homeassistant.local:8123；远程首次绑定请推客户同网授权，"
+                    "或工程师在可达入口下改写 webhook 主机"
+                ),
             },
         }
     if action == "config_update":

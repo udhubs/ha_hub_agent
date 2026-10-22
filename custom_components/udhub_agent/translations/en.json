@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Connect to UDHUB Cloud",
-        "description": "Choose pairing mode and submit.",
+        "description": "Choose pairing mode and submit.\n\n**Open https://www.udhub.com to register/sign in and claim this device code.**",
         "data": {
           "cloud_url": "Cloud URL",
           "bind_mode": "Pairing mode",
@@ -12,10 +12,10 @@
         }
       },
       "activation": {
-        "title": "Device code (pending claim)",
-        "description": "Device code: `{user_code}`\n\nValid for ~{expires_minutes} minutes.\n\n{claim_status}",
+        "title": "Device code (pending bind)",
+        "description": "**Open https://www.udhub.com to register/sign in and claim this device code.**\n\nDevice code: `{user_code}`\n\nValid: {expires_minutes}\n\n⏳ **Status: pending bind** — claim this code under “Claim project”.\n\n{claim_status}",
         "data": {
-          "activation_qr": "Scan to claim",
+          "activation_qr": "Device QR code",
           "activation_code": "Device code"
         }
       }
@@ -32,17 +32,18 @@
   "options": {
     "step": {
       "init": {
-        "title": "UDHUB Agent",
-        "description": "Host **{gateway_id}** · code **{user_code}**",
+        "title": "UDHub Agent",
+        "description": "Device code **{user_code}**\n\n{claim_status}",
         "data": {
-          "action": "Action"
+          "action": "Action",
+          "activation_qr": "Device QR code"
         }
       },
       "view_label": {
         "title": "Activation label",
-        "description": "Host **{gateway_id}** · code **{user_code}**",
+        "description": "Device code **{user_code}**\n\n{claim_status}",
         "data": {
-          "activation_qr": "QR code",
+          "activation_qr": "Device QR code",
           "activation_code": "Device code"
         }
       },

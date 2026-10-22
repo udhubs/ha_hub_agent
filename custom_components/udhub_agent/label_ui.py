@@ -23,8 +23,9 @@ from .const import (
     CONF_SETUP_ID,
     CONF_USER_CODE,
     BIND_SOURCE_CLOUD,
-    BIND_SOURCE_LOCAL,
     CLAIM_STATUS_CLAIMED,
+    CONSOLE_CLAIM_HINT,
+    CONSOLE_CONNECTED_HINT,
     DEFAULT_CLOUD_URL,
 )
 
@@ -85,7 +86,10 @@ def label_description_placeholders(
     claim_status: str | None = None,
 ) -> dict[str, str]:
     """Placeholders for strings.json activation / label steps."""
-    default_status = "在云枢控制台「认领项目」输入上方设备码完成绑定。"
+    default_status = (
+        f"**{CONSOLE_CLAIM_HINT}**\n\n"
+        f"⏳ **待绑定** — 设备码长期有效；绑定成功后 Agent 将自动连接。"
+    )
     expires_label = (
         "长期有效（认领前不过期）"
         if ACTIVATION_EXPIRES_SEC <= 0
@@ -155,8 +159,8 @@ def options_bind_state(
             "action_value": "connected",
             "action_label": "已连接云枢",
             "claim_status": (
-                f"✅ **已连接云枢** · 主机 `{gateway_id}`\n\n"
-                "云端激活码已绑定，无需重复操作。"
+                f"✅ **已连接云枢** · 云端\n\n"
+                f"{CONSOLE_CONNECTED_HINT}"
             ),
         }
     if cloud_bound:
@@ -165,8 +169,8 @@ def options_bind_state(
             "action_value": "bound",
             "action_label": "已绑定云端激活码",
             "claim_status": (
-                "✅ **已绑定云端激活码**\n\n"
-                "请在云枢控制台完成认领；认领成功后 Agent 将自动连接。"
+                f"**{CONSOLE_CLAIM_HINT}**\n\n"
+                "✅ **已绑定云端激活码** — 认领成功后 Agent 将自动连接。"
             ),
         }
     return {
@@ -174,8 +178,8 @@ def options_bind_state(
         "action_value": "rebind",
         "action_label": "输入云端激活码（服务商出示码）",
         "claim_status": (
-            "设备码长期有效。在云枢「认领项目」输入该码即可；"
-            "或使用下方绑定服务商出示的云端码。"
+            f"**{CONSOLE_CLAIM_HINT}**\n\n"
+            "⏳ **待绑定** — 设备码长期有效；也可使用下方服务商出示的云端码。"
         ),
     }
 

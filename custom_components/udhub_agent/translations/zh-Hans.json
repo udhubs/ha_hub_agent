@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "连接云枢",
-        "description": "选择配对方式后点 **提交**。",
+        "description": "选择配对方式后点 **提交**。\n\n**请打开 https://www.udhub.com 注册/登录并认领本机设备码。**",
         "data": {
           "cloud_url": "云枢云端 URL",
           "bind_mode": "配对方式",
@@ -12,10 +12,10 @@
         }
       },
       "activation": {
-        "title": "设备码（待云枢认领）",
-        "description": "**设备码**：`{user_code}`\n\n**有效期**：{expires_minutes}\n\n{claim_status}",
+        "title": "设备码（待绑定）",
+        "description": "**请打开 https://www.udhub.com 注册/登录并认领本机设备码。**\n\n**设备码**：`{user_code}`\n\n**有效期**：{expires_minutes}\n\n⏳ **绑定状态：待绑定** — 在云枢「认领项目」输入该码；绑定成功后 Agent 自动连接。\n\n{claim_status}",
         "data": {
-          "activation_qr": "扫码认领",
+          "activation_qr": "设备码二维码",
           "activation_code": "设备码（8 位，可复制）"
         }
       }
@@ -28,10 +28,10 @@
   "options": {
     "step": {
       "init": {
-        "title": "UDHUB Agent",
-        "description": "主机 **{gateway_id}** · 设备码 **{user_code}**\n\n{claim_status}",
+        "title": "UDHub Agent",
+        "description": "设备码 **{user_code}**\n\n{claim_status}",
         "data": {
-          "activation_qr": "扫码认领",
+          "activation_qr": "设备码二维码",
           "activation_code": "设备码（8 位，可复制）",
           "action": "绑定云端出示码"
         }
@@ -42,6 +42,14 @@
         "data": {
           "cloud_url": "云枢云端 URL",
           "activation_code": "云端激活码"
+        }
+      },
+      "view_label": {
+        "title": "激活标签",
+        "description": "设备码 **{user_code}**\n\n{claim_status}",
+        "data": {
+          "activation_qr": "设备码二维码",
+          "activation_code": "设备码（8 位，可复制）"
         }
       }
     },

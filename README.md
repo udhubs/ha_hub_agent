@@ -1,7 +1,7 @@
 # UDHUB · 云枢 Agent (`udhub_agent`)
 
 <p align="center">
-  <img src="media/github-avatar.png" width="128" height="128" alt="UDHUB Agent">
+  <img src="media/github-avatar.png" width="128" height="128" alt="UDHub Agent">
 </p>
 
 Home Assistant **custom integration** that connects a field HA host to [UDHUB 云枢](https://www.udhub.com) for project ops: status sync, controlled commands, settings surface, and audit.
@@ -28,7 +28,7 @@ git clone https://gitee.com/udhubs/ha_hub_agent.git   # or github.com/udhubs/ha_
 cd ha_hub_agent
 git checkout v0.4.43   # pin version
 ./install.sh /config
-# Restart Home Assistant → Settings → Devices & services → Add → UDHUB Agent
+# Restart Home Assistant → Settings → Devices & services → Add → UDHub Agent
 ```
 
 ### ② HACS custom repository

@@ -1,4 +1,4 @@
-"""UDHUB Agent cloud WebSocket client.
+"""UDHub Agent cloud WebSocket client.
 
 Implements the Agent side of doc/09_UDHUB云枢_Agent协议_v0.1.md:
 - outbound WebSocket over /agent/v1/ws
@@ -26,7 +26,7 @@ from typing import Any
 import aiohttp
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EVENT_STATE_CHANGED
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import Context, HomeAssistant, callback
 from homeassistant.helpers import aiohttp_client
 from homeassistant.const import __version__ as HA_VERSION
 
@@ -41,7 +41,6 @@ from .const import (
     CONF_GATEWAY_ID,
     DEFAULT_CLOUD_URL,
     DENIED_DOMAINS,
-    DOMAIN,
     EXTENDED_DOMAINS,
     HEARTBEAT_INTERVAL,
     PROTOCOL_VERSION,
@@ -81,6 +80,92 @@ def _new_id(prefix: str) -> str:
     return f"{prefix}_{secrets.token_hex(8)}"
 
 
+def _realpath(path: str) -> str:
+    import os
+
+    return os.path.realpath(path)
+
+
+def _path_isfile(path: str) -> bool:
+    import os
+
+    return os.path.isfile(path)
+
+
+def _path_isdir(path: str) -> bool:
+    import os
+
+    return os.path.isdir(path)
+
+
+def _path_getsize(path: str) -> int:
+    import os
+
+    return os.path.getsize(path)
+
+
+def _remove_file(path: str) -> None:
+    import os
+
+    os.remove(path)
+
+
+def _read_utf8(path: str) -> str:
+    with open(path, encoding="utf-8") as handle:
+        return handle.read()
+
+
+def _read_utf8_replace(path: str) -> str:
+    with open(path, encoding="utf-8", errors="replace") as handle:
+        return handle.read()
+
+
+def _ensure_parent(path: str) -> None:
+    import os
+
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+
+
+def _atomic_write_text(path: str, text: str) -> None:
+    import os
+
+    tmp = f"{path}.tmp"
+    with open(tmp, "w", encoding="utf-8") as handle:
+        handle.write(text)
+    os.replace(tmp, path)
+
+
+def _prepare_and_write(path: str, text: str) -> None:
+    _ensure_parent(path)
+    _atomic_write_text(path, text)
+
+
+def _listdir_sorted(path: str) -> list[str]:
+    import os
+
+    return sorted(os.listdir(path))
+
+
+def _list_config_entries(full: str, names: list[str]) -> list[dict[str, Any]]:
+    import os
+
+    entries: list[dict[str, Any]] = []
+    for name in names:
+        entry_path = os.path.join(full, name)
+        is_dir = os.path.isdir(entry_path)
+        entry: dict[str, Any] = {
+            "name": name,
+            "type": "directory" if is_dir else "file",
+        }
+        if not is_dir:
+            try:
+                entry["size"] = os.path.getsize(entry_path)
+            except OSError:
+                pass
+        entries.append(entry)
+    return entries
+
+
 def _ws_url_from_http(http_url: str) -> str:
     """Map http://host:port to ws://host:port/agent/v1/ws."""
     url = http_url.rstrip("/")
@@ -111,13 +196,26 @@ def _safe_attributes(state) -> dict[str, Any]:
     for key, value in raw.items():
         if key in ("entity_id", "context", "user_id"):
             continue
+        # HA 空属性勿落成字符串 "None"，否则云端镜像与现场不一致
+        if value is None:
+            continue
         if isinstance(value, (str, int, float, bool)):
+            # 个别集成把缺失写成字面量 "None"/"null"
+            if isinstance(value, str) and value.strip().lower() in (
+                "none",
+                "null",
+                "undefined",
+            ):
+                continue
             attrs[key] = value
         elif isinstance(value, (list, dict)):
             # keep small; avoid dumping large arrays
             attrs[key] = value
         else:
-            attrs[key] = str(value)
+            text = str(value)
+            if text.strip().lower() in ("none", "null", "undefined"):
+                continue
+            attrs[key] = text
     return attrs
 
 
@@ -265,6 +363,7 @@ class UdhubCloudClient:
         self._task: asyncio.Task | None = None
         self._heartbeat_task: asyncio.Task | None = None
         self._supervisor_task: asyncio.Task | None = None
+        self._perception_uplink = None
         self._state_listener = None
         self._closing = False
         self._connected = False
@@ -340,6 +439,12 @@ class UdhubCloudClient:
     async def stop(self) -> None:
         """Stop the client and clean up."""
         self._closing = True
+        if self._perception_uplink is not None:
+            try:
+                await self._perception_uplink.stop()
+            except Exception:
+                _LOGGER.debug("UDHUB perception uplink stop failed", exc_info=True)
+            self._perception_uplink = None
         if self._state_listener:
             self._state_listener()
             self._state_listener = None
@@ -361,6 +466,24 @@ class UdhubCloudClient:
             except asyncio.CancelledError:
                 pass
         self._connected = False
+
+    def _start_perception_uplink(self) -> None:
+        """HTTP uplink for perception.event.v1 (state branch · not WSS)."""
+        if self._perception_uplink is not None:
+            return
+        try:
+            from .perception_uplink import PerceptionUplink
+
+            uplink = PerceptionUplink(
+                self.hass,
+                cloud_url=self.cloud_url,
+                gateway_id=self.gateway_id,
+                access_token=self.access_token,
+            )
+            uplink.start()
+            self._perception_uplink = uplink
+        except Exception:
+            _LOGGER.debug("UDHUB perception uplink start failed", exc_info=True)
 
     async def _run(self) -> None:
         """Main reconnect loop."""
@@ -501,6 +624,7 @@ class UdhubCloudClient:
                 self._connected = True
                 self._last_auth_ok_ts = time.monotonic()
                 self._consecutive_failures = 0
+                self._start_perception_uplink()
             else:
                 _LOGGER.warning("UDHUB WS closed before hello: %s", first.type)
                 return
@@ -877,7 +1001,8 @@ class UdhubCloudClient:
                 row = serialize_device_row(
                     self.hass, d, include_room=True, devices_by_id=by_id
                 )
-                # Keep SERVICE devices (Season 等) with entry_type for SaaS「设备与服务」拆分
+                # Keep SERVICE devices for SaaS「已集成 → 服务」
+                # (HA Settings → Devices & services → Integrations → Services)
                 if (
                     not getattr(d, "parent_device_id", None)
                     and service_enum is not None
@@ -1432,6 +1557,28 @@ class UdhubCloudClient:
             return False
         return True
 
+    async def _admin_service_context(self) -> Context | None:
+        """Pick an active HA admin for privileged services (update.install, …)."""
+        try:
+            users = await self.hass.auth.async_get_users()
+        except Exception:  # noqa: BLE001
+            return None
+        preferred = None
+        for user in users:
+            if not getattr(user, "is_active", True):
+                continue
+            if getattr(user, "system_generated", False):
+                continue
+            if not getattr(user, "is_admin", False):
+                continue
+            if getattr(user, "is_owner", False):
+                return Context(user_id=user.id)
+            if preferred is None:
+                preferred = user
+        if preferred is not None:
+            return Context(user_id=preferred.id)
+        return None
+
     async def _exec_call_service(
         self,
         ws: aiohttp.ClientWebSocketResponse,
@@ -1441,7 +1588,13 @@ class UdhubCloudClient:
         domain = payload.get("domain")
         service = payload.get("service")
         target = payload.get("target") or {}
-        data = payload.get("data") or {}
+        # Prefer `data` (protocol); accept legacy `service_data` from older SaaS.
+        raw_data = payload.get("data")
+        if not isinstance(raw_data, dict) or not raw_data:
+            raw_data = payload.get("service_data")
+        data = raw_data if isinstance(raw_data, dict) else {}
+        if not target and isinstance(data.get("entity_id"), (str, list)):
+            target = {"entity_id": data["entity_id"]}
 
         if domain in DENIED_DOMAINS:
             result["status"] = "denied"
@@ -1466,8 +1619,44 @@ class UdhubCloudClient:
             return
 
         service_call = f"{domain}.{service}"
-        _LOGGER.info("UDHUB executing service %s target=%s data=%s", service_call, target, data)
-        await self.hass.services.async_call(domain, service, service_data=data, target=target, blocking=True)
+        # HA 2026.9+: update.install/skip need an admin user Context.
+        # Automations are exempt; bare async_call without user may be rejected.
+        call_context: Context | None = None
+        if domain == "update" and service in (
+            "install",
+            "skip",
+            "clear_skipped",
+        ):
+            call_context = await self._admin_service_context()
+            if call_context is None:
+                result["status"] = "failed"
+                result["error"] = "no_admin_user"
+                result["message"] = (
+                    "无可用管理员用户，无法执行 update 安装/跳过（HA 2026.9+）"
+                )
+                return
+            result["auth_context"] = "admin"
+        _LOGGER.info(
+            "UDHUB executing service %s target=%s data=%s context=%s",
+            service_call,
+            target,
+            data,
+            "admin" if call_context else "none",
+        )
+        try:
+            await self.hass.services.async_call(
+                domain,
+                service,
+                service_data=data,
+                target=target,
+                blocking=True,
+                context=call_context,
+            )
+        except Exception as exc:  # noqa: BLE001
+            result["status"] = "failed"
+            result["error"] = str(exc)[:300]
+            result["service"] = service_call
+            return
         result["status"] = "ok"
         result["service"] = service_call
         if domain == "scene" and service == "delete":
@@ -1995,9 +2184,9 @@ class UdhubCloudClient:
             return
 
         # Security: only allow YAML under config/packages per write scope (PRD §5.4E/G)
-        import os
-
-        config_dir = os.path.realpath(self.hass.config.config_dir)
+        config_dir = await self.hass.async_add_executor_job(
+            _realpath, self.hass.config.config_dir
+        )
         candidate, relative = resolve_config_target(config_dir, str(path))
         if candidate is None or relative is None:
             result["status"] = "denied"
@@ -2015,9 +2204,9 @@ class UdhubCloudClient:
 
         if delete_file:
             removed = False
-            if os.path.isfile(full_path):
+            if await self.hass.async_add_executor_job(_path_isfile, full_path):
                 try:
-                    os.remove(full_path)
+                    await self.hass.async_add_executor_job(_remove_file, full_path)
                     removed = True
                 except OSError as exc:
                     result["status"] = "failed"
@@ -2088,7 +2277,7 @@ class UdhubCloudClient:
                 )
             return
 
-        os.makedirs(os.path.dirname(full_path), exist_ok=True)
+        await self.hass.async_add_executor_job(_ensure_parent, full_path)
 
         # PRD 5.4E：写入前确保 packages include 已启用（幂等）
         try:
@@ -2111,11 +2300,12 @@ class UdhubCloudClient:
         # Doc 20 §4.2: keep previous content for rollback
         previous_content: str | None = None
         previous_existed = False
-        if os.path.isfile(full_path):
+        if await self.hass.async_add_executor_job(_path_isfile, full_path):
             previous_existed = True
             try:
-                with open(full_path, encoding="utf-8") as rf:
-                    previous_content = rf.read()
+                previous_content = await self.hass.async_add_executor_job(
+                    _read_utf8, full_path
+                )
             except OSError as exc:
                 result["status"] = "failed"
                 result["error"] = f"backup_read_failed:{exc}"
@@ -2164,22 +2354,19 @@ class UdhubCloudClient:
                     return
 
         # write atomically
-        tmp = f"{full_path}.tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            f.write(new_text)
-        os.replace(tmp, full_path)
+        await self.hass.async_add_executor_job(_atomic_write_text, full_path, new_text)
 
         async def _restore_previous() -> None:
-            if previous_existed and previous_content is not None:
-                tmp_r = f"{full_path}.tmp"
-                with open(tmp_r, "w", encoding="utf-8") as wf:
-                    wf.write(previous_content)
-                os.replace(tmp_r, full_path)
-            elif not previous_existed and os.path.isfile(full_path):
-                try:
-                    os.remove(full_path)
-                except OSError:
-                    pass
+            def _restore() -> None:
+                if previous_existed and previous_content is not None:
+                    _atomic_write_text(full_path, previous_content)
+                elif not previous_existed and _path_isfile(full_path):
+                    try:
+                        _remove_file(full_path)
+                    except OSError:
+                        pass
+
+            await self.hass.async_add_executor_job(_restore)
 
         # check_config before reload (doc 20 §4.2)
         check_errors: list[str] = []
@@ -2249,44 +2436,70 @@ class UdhubCloudClient:
                     result["path"] = relative
                     return
 
-        # 校验 scene package 是否真正注册（避免「落盘成功但 entity 不存在」）
+        # 校验 package 是否真正注册（scene / automation 分流，避免误把 automation - id 当 scene）
         text = new_text
-        scene_id = None
+        is_automation_pkg = bool(re.search(r"(?m)^automation:\s*$", text))
+        is_scene_pkg = bool(re.search(r"(?m)^scene:\s*$", text))
+        object_id = None
         friendly_name = None
-        # list format: - id: udhub_xxx / name: "..."
+        # list format: - id: udhub_xxx
         m_list = re.search(r"(?m)^\s{2}-\s+id:\s*(udhub_[a-z0-9_]+)\s*$", text)
         if m_list:
-            scene_id = m_list.group(1)
-        m_name = re.search(r"(?m)^\s{4}name:\s*[\"']?(.+?)[\"']?\s*$", text)
+            object_id = m_list.group(1)
+        m_name = re.search(
+            r"(?m)^\s{4}(?:name|alias):\s*[\"']?(.+?)[\"']?\s*$", text
+        )
         if m_name:
             friendly_name = m_name.group(1).strip().strip("\"'")
         # dict format (legacy): scene:\n  udhub_xxx:
-        if not scene_id:
+        if not object_id and is_scene_pkg:
             m_scene = re.search(r"(?m)^scene:\s*$", text)
             if m_scene:
                 after = text[m_scene.end() :]
                 m_dict = re.search(r"(?m)^\s{2}(udhub_[a-z0-9_]+)\s*:", after)
                 if m_dict:
-                    scene_id = m_dict.group(1)
+                    object_id = m_dict.group(1)
 
-        def _find_scene_entity() -> str | None:
-            if scene_id:
-                eid = f"scene.{scene_id}"
+        def _find_domain_entity(domain: str) -> str | None:
+            if object_id:
+                eid = f"{domain}.{object_id}"
                 if self.hass.states.get(eid) is not None:
                     return eid
             if friendly_name:
-                for state in self.hass.states.async_all("scene"):
+                for state in self.hass.states.async_all(domain):
                     if (
                         state.name == friendly_name
                         or state.attributes.get("friendly_name") == friendly_name
                     ):
                         return state.entity_id
+            if object_id and domain == "automation":
+                # HA 常把 unique_id 映射为不同 entity_id；按 unique_id 回查
+                try:
+                    from homeassistant.helpers import entity_registry as er
+
+                    registry = er.async_get(self.hass)
+                    for ent in registry.entities.values():
+                        if (
+                            ent.domain == "automation"
+                            and ent.unique_id == object_id
+                        ):
+                            if self.hass.states.get(ent.entity_id) is not None:
+                                return ent.entity_id
+                except Exception:
+                    pass
             return None
 
-        if scene_id or friendly_name:
+        verify_domain = (
+            "automation"
+            if is_automation_pkg
+            else "scene"
+            if is_scene_pkg or object_id or friendly_name
+            else None
+        )
+        if verify_domain and (object_id or friendly_name):
             registered_id = None
             for _ in range(16):
-                registered_id = _find_scene_entity()
+                registered_id = _find_domain_entity(verify_domain)
                 if registered_id:
                     break
                 await asyncio.sleep(0.35)
@@ -2301,9 +2514,9 @@ class UdhubCloudClient:
                 except Exception:
                     pass
                 try:
-                    result["scene_entities_sample"] = sorted(
+                    result[f"{verify_domain}_entities_sample"] = sorted(
                         s.entity_id
-                        for s in self.hass.states.async_all("scene")
+                        for s in self.hass.states.async_all(verify_domain)
                     )[:30]
                 except Exception:
                     pass
@@ -2313,23 +2526,23 @@ class UdhubCloudClient:
                         "homeassistant", "reload_core_config", {}, blocking=True
                     )
                     await self.hass.services.async_call(
-                        "scene", "reload", {}, blocking=True
+                        verify_domain, "reload", {}, blocking=True
                     )
                 except Exception:
                     pass
                 result["status"] = "failed"
-                result["error"] = "scene_not_registered"
+                result["error"] = f"{verify_domain}_not_registered"
                 result["rolled_back"] = True
                 result["path"] = relative
-                if scene_id:
-                    result["expected_entity"] = f"scene.{scene_id}"
+                if object_id:
+                    result["expected_entity"] = f"{verify_domain}.{object_id}"
                 if friendly_name:
                     result["expected_name"] = friendly_name
                 result["hint"] = (
-                    "File written but scene entity missing. Ensure "
+                    f"File written but {verify_domain} entity missing. Ensure "
                     "configuration.yaml has: homeassistant: packages: "
                     "!include_dir_named packages  (flat packages/udhub_*.yaml). "
-                    "Use list-format scene YAML (- id: udhub_…). "
+                    f"Use list-format {verify_domain} YAML (- id: udhub_…). "
                     "If packages include was just added, one HA restart may be required."
                 )
                 if reload_errors:
@@ -2546,7 +2759,6 @@ class UdhubCloudClient:
         self, payload: dict[str, Any], result: dict[str, Any]
     ) -> None:
         """Read a file from the HA config directory."""
-        import os
         if not self._require_extended_tier(payload, result):
             return
         path = payload.get("path") or ""
@@ -2560,20 +2772,19 @@ class UdhubCloudClient:
                 result["status"] = "denied"
                 result["error"] = "path_not_allowed"
             return
-        if not os.path.isfile(full):
+        if not await self.hass.async_add_executor_job(_path_isfile, full):
             result["status"] = "failed"
             result["error"] = "file_not_found"
             return
         # Size limit: 1MB
-        size = os.path.getsize(full)
+        size = await self.hass.async_add_executor_job(_path_getsize, full)
         if size > 1_048_576:
             result["status"] = "failed"
             result["error"] = "file_too_large"
             result["size"] = size
             return
         try:
-            with open(full, "r", encoding="utf-8", errors="replace") as f:
-                content = f.read()
+            content = await self.hass.async_add_executor_job(_read_utf8_replace, full)
             result["status"] = "ok"
             result["path"] = relative
             result["content"] = content
@@ -2586,7 +2797,6 @@ class UdhubCloudClient:
         self, payload: dict[str, Any], result: dict[str, Any]
     ) -> None:
         """Write a file to the HA config directory."""
-        import os
         if not self._require_extended_tier(payload, result):
             return
         path = payload.get("path") or ""
@@ -2602,11 +2812,8 @@ class UdhubCloudClient:
                 result["error"] = "path_not_allowed"
             return
         try:
-            os.makedirs(os.path.dirname(full), exist_ok=True)
-            tmp = f"{full}.tmp"
-            with open(tmp, "w", encoding="utf-8") as f:
-                f.write(content if isinstance(content, str) else str(content))
-            os.replace(tmp, full)
+            text = content if isinstance(content, str) else str(content)
+            await self.hass.async_add_executor_job(_prepare_and_write, full, text)
             result["status"] = "ok"
             result["path"] = relative
         except Exception as exc:
@@ -2617,7 +2824,6 @@ class UdhubCloudClient:
         self, payload: dict[str, Any], result: dict[str, Any]
     ) -> None:
         """Delete a file from the HA config directory."""
-        import os
         if not self._require_extended_tier(payload, result):
             return
         path = payload.get("path") or ""
@@ -2631,12 +2837,12 @@ class UdhubCloudClient:
                 result["status"] = "denied"
                 result["error"] = "path_not_allowed"
             return
-        if not os.path.isfile(full):
+        if not await self.hass.async_add_executor_job(_path_isfile, full):
             result["status"] = "failed"
             result["error"] = "file_not_found"
             return
         try:
-            os.remove(full)
+            await self.hass.async_add_executor_job(_remove_file, full)
             result["status"] = "ok"
             result["path"] = relative
         except Exception as exc:
@@ -2647,7 +2853,6 @@ class UdhubCloudClient:
         self, payload: dict[str, Any], result: dict[str, Any]
     ) -> None:
         """List files in a directory within the HA config directory."""
-        import os
         if not self._require_extended_tier(payload, result):
             return
         path = payload.get("path") or "."
@@ -2659,29 +2864,17 @@ class UdhubCloudClient:
                 result["status"] = "denied"
                 result["error"] = "path_not_allowed"
             return
-        if not os.path.isdir(full):
+        if not await self.hass.async_add_executor_job(_path_isdir, full):
             result["status"] = "failed"
             result["error"] = "not_a_directory"
             return
         try:
-            entries = []
             dir_rel = relative or "."
-            names = filter_visible_config_entries(
-                dir_rel, sorted(os.listdir(full))[:500]
+            listed = await self.hass.async_add_executor_job(_listdir_sorted, full)
+            names = filter_visible_config_entries(dir_rel, listed[:500])
+            entries = await self.hass.async_add_executor_job(
+                _list_config_entries, full, names
             )
-            for name in names:
-                entry_path = os.path.join(full, name)
-                is_dir = os.path.isdir(entry_path)
-                entry = {
-                    "name": name,
-                    "type": "directory" if is_dir else "file",
-                }
-                if not is_dir:
-                    try:
-                        entry["size"] = os.path.getsize(entry_path)
-                    except Exception:
-                        pass
-                entries.append(entry)
             result["status"] = "ok"
             result["path"] = relative
             result["entries"] = entries
@@ -3006,7 +3199,6 @@ class UdhubCloudClient:
                 result["error"] = "dangerous_command_blocked"
                 return
         try:
-            import subprocess
             proc = await asyncio.create_subprocess_shell(
                 command,
                 stdout=asyncio.subprocess.PIPE,

@@ -204,8 +204,6 @@ async def _fallback_unload_setup(
     hass: HomeAssistant, entry: ConfigEntry, target_version: str
 ) -> None:
     """Last-resort reload: explicit unload → purge → setup."""
-    from homeassistant.loader import DATA_COMPONENTS
-
     _LOGGER.warning(
         "UDHUB agent_update fallback: explicit unload+setup entry=%s",
         entry.entry_id,

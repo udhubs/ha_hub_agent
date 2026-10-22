@@ -1,5 +1,13 @@
 {
-  "name": "UDHUB 云枢 Agent",
+  "name": "UDHub Agent",
+  "content_in_root": false,
+  "filename": "udhub_agent.zip",
   "render_readme": true,
-  "homeassistant": "2026.9.0"
+  "homeassistant": "2026.9.0",
+  "zip_release": true,
+  "hacs": "1.6.0",
+  "domains": [
+    "udhub_agent"
+  ],
+  "iot_class": "Cloud Pushing"
 }

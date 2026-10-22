@@ -56,14 +56,22 @@ async def dispatch(hass: HomeAssistant, action: str, payload: dict[str, Any]) ->
         node_id = payload.get("node_id")
         if node_id is None:
             return {"status": "failed", "error": "node_id_required"}
-        return await _rpc(
+        timeout = payload.get("timeout")
+        params: dict[str, Any] = {"node_id": int(node_id)}
+        if timeout is not None:
+            try:
+                params["timeout"] = int(timeout)
+            except (TypeError, ValueError):
+                pass
+        raw = await _rpc(
             hass,
             {
                 **payload,
                 "method": "open_commissioning_window",
-                "params": {"node_id": int(node_id)},
+                "params": params,
             },
         )
+        return _normalize_commissioning_window(raw, int(node_id))
     if action in ("check_node_update", "node_update_check"):
         node_id = payload.get("node_id")
         if node_id is None:
@@ -92,6 +100,36 @@ async def dispatch(hass: HomeAssistant, action: str, payload: dict[str, Any]) ->
                 "params": {"ssid": ssid, "credentials": credentials},
             },
         )
+    if action in (
+        "set_thread_credentials",
+        "set_thread_dataset",
+        "thread_credentials",
+        "thread_dataset",
+    ):
+        dataset = str(
+            payload.get("dataset")
+            or payload.get("credentials")
+            or payload.get("thread_dataset")
+            or ""
+        ).strip()
+        if not dataset:
+            return {"status": "failed", "error": "thread_dataset_required"}
+        # Thread operational dataset stays in Matter server memory — never echoed
+        raw = await _rpc(
+            hass,
+            {
+                **payload,
+                "method": "set_thread_dataset",
+                "params": {"dataset": dataset},
+            },
+        )
+        if raw.get("status") == "ok":
+            return {
+                **raw,
+                "thread_credentials_set": True,
+                "note": "Thread dataset 已写入 Matter Server 内存（不回传内容）",
+            }
+        return raw
     return {"status": "failed", "error": "unsupported_action", "action": action}
 
 
@@ -307,4 +345,55 @@ def _normalize_nodes_response(raw: dict[str, Any]) -> dict[str, Any]:
         "nodes": nodes,
         "node_count": len(nodes),
         "note": raw.get("note") or "nodes normalized",
+    }
+
+
+def _normalize_commissioning_window(
+    raw: dict[str, Any], node_id: int
+) -> dict[str, Any]:
+    """Surface Multi-Admin share codes for console copy (setup_* fields)."""
+    if raw.get("status") != "ok":
+        return {**raw, "node_id": node_id}
+    result = raw.get("result")
+    params: dict[str, Any] = {}
+    if isinstance(result, dict):
+        params = result
+    elif isinstance(result, str):
+        # Some builds return the manual code as a bare string
+        params = {"setup_manual_code": result}
+
+    def _pick(*keys: str) -> str | None:
+        for k in keys:
+            v = params.get(k)
+            if v is None:
+                continue
+            s = str(v).strip()
+            if s:
+                return s
+        return None
+
+    setup_pin = _pick("setup_pin_code", "setupPinCode", "pin_code")
+    setup_manual = _pick(
+        "setup_manual_code", "setupManualCode", "manual_code", "code"
+    )
+    setup_qr = _pick("setup_qr_code", "setupQRCode", "qr_code", "qr")
+
+    share: dict[str, Any] = {
+        "node_id": node_id,
+        "setup_pin_code": setup_pin,
+        "setup_manual_code": setup_manual,
+        "setup_qr_code": setup_qr,
+    }
+    # Prefer QR (MT:…) then manual digits for one-tap paste into peer apps
+    primary = setup_qr or setup_manual or setup_pin
+    return {
+        **raw,
+        "node_id": node_id,
+        "commissioning": share,
+        "share_code": primary,
+        "setup_pin_code": setup_pin,
+        "setup_manual_code": setup_manual,
+        "setup_qr_code": setup_qr,
+        "note": raw.get("note")
+        or "Multi-Admin 配对窗已开；将共享码粘贴到 Apple Home / Google Home 等",
     }

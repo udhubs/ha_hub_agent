@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-CATALOG_VERSION = 12
+CATALOG_VERSION = 14
 
 # Generic kinds → allowed actions
 GENERIC_KINDS: dict[str, list[str]] = {
@@ -79,7 +79,7 @@ GENERIC_KINDS: dict[str, list[str]] = {
         "options_flow_step",
         "options_flow_abort",
     ],
-    "user": ["list", "create", "delete", "update"],
+    "user": ["list", "create", "delete", "update", "change_password"],
     "ha_system": [
         "restart",
         "check_config",
@@ -149,6 +149,10 @@ GENERIC_KINDS: dict[str, list[str]] = {
         "node_update_check",
         "set_wifi_credentials",
         "wifi_credentials",
+        "set_thread_credentials",
+        "set_thread_dataset",
+        "thread_credentials",
+        "thread_dataset",
     ],
     "diagnostics": [
         "brand_probe",
@@ -240,6 +244,8 @@ KIND_ALIASES: dict[str, tuple[str, str]] = {
     "user_list": ("user", "list"),
     "user_create": ("user", "create"),
     "user_delete": ("user", "delete"),
+    "user_update": ("user", "update"),
+    "user_change_password": ("user", "change_password"),
     "ha_restart": ("ha_system", "restart"),
     "ha_check_config": ("ha_system", "check_config"),
     "ha_reload_core": ("ha_system", "reload_core"),
