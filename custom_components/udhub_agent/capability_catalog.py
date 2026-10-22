@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-CATALOG_VERSION = 16
+CATALOG_VERSION = 17
 
 # Generic kinds → allowed actions
 GENERIC_KINDS: dict[str, list[str]] = {
@@ -88,6 +88,7 @@ GENERIC_KINDS: dict[str, list[str]] = {
         "reload_all",
         "config_get",
         "config_update",
+        "correct_locale",
         "analytics_get",
         "logger_set_default",
         "logger_set_level",

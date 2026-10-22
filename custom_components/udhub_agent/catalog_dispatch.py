@@ -983,6 +983,159 @@ async def _ha_system(hass: HomeAssistant, action: str, payload: dict[str, Any]) 
             }}
         except Exception as exc:  # noqa: BLE001
             return {"status": "failed", "error": str(exc)}
+    if action == "correct_locale":
+        """One-click timezone / location correction for field HA hosts."""
+        # Approximate city centroids (WGS84) for offline correction — no external geocode.
+        city_coords: dict[str, tuple[float, float]] = {
+            "北京": (39.9042, 116.4074),
+            "上海": (31.2304, 121.4737),
+            "广州": (23.1291, 113.2644),
+            "深圳": (22.5431, 114.0579),
+            "杭州": (30.2741, 120.1551),
+            "南京": (32.0603, 118.7969),
+            "成都": (30.5728, 104.0668),
+            "重庆": (29.5630, 106.5516),
+            "武汉": (30.5928, 114.3055),
+            "西安": (34.3416, 108.9398),
+            "苏州": (31.2989, 120.5853),
+            "天津": (39.3434, 117.3616),
+            "长沙": (28.2282, 112.9388),
+            "郑州": (34.7466, 113.6253),
+            "青岛": (36.0671, 120.3826),
+            "厦门": (24.4798, 118.0894),
+            "福州": (26.0745, 119.2965),
+            "合肥": (31.8206, 117.2272),
+            "济南": (36.6512, 117.1201),
+            "大连": (38.9140, 121.6147),
+            "昆明": (25.0389, 102.7183),
+            "贵阳": (26.6470, 106.6302),
+            "南宁": (22.8170, 108.3669),
+            "海口": (20.0440, 110.1999),
+            "沈阳": (41.8057, 123.4315),
+            "哈尔滨": (45.8038, 126.5349),
+            "长春": (43.8171, 125.3235),
+            "石家庄": (38.0428, 114.5149),
+            "太原": (37.8706, 112.5489),
+            "南昌": (28.6820, 115.8579),
+            "乌鲁木齐": (43.8256, 87.6168),
+            "拉萨": (29.6525, 91.1721),
+            "呼和浩特": (40.8414, 111.7519),
+            "银川": (38.4872, 106.2309),
+            "西宁": (36.6171, 101.7782),
+            "香港": (22.3193, 114.1694),
+            "澳门": (22.1987, 113.5439),
+            "台北": (25.0330, 121.5654),
+        }
+
+        before = {
+            "location_name": hass.config.location_name,
+            "time_zone": hass.config.time_zone,
+            "language": getattr(hass.config, "language", None),
+            "latitude": hass.config.latitude,
+            "longitude": hass.config.longitude,
+            "elevation": hass.config.elevation,
+        }
+
+        preset = str(payload.get("preset") or "china").strip().lower()
+        updates: dict[str, Any] = {}
+
+        # Defaults for China field delivery; explicit payload wins.
+        if preset in ("china", "cn", "asia_shanghai"):
+            updates["time_zone"] = "Asia/Shanghai"
+            updates["language"] = "zh-Hans"
+
+        for key in (
+            "location_name",
+            "time_zone",
+            "language",
+            "latitude",
+            "longitude",
+            "elevation",
+        ):
+            if key in payload and payload.get(key) is not None and payload.get(key) != "":
+                updates[key] = payload[key]
+
+        city = str(payload.get("city") or "").strip()
+        address = str(payload.get("address") or "").strip()
+        if "location_name" not in updates:
+            name_hint = str(payload.get("project_name") or "").strip()
+            if name_hint:
+                updates["location_name"] = name_hint
+            elif city:
+                updates["location_name"] = city
+
+        if "latitude" not in updates or "longitude" not in updates:
+            matched = None
+            hay = f"{city} {address}"
+            for name, coords in city_coords.items():
+                if name and name in hay:
+                    matched = (name, coords)
+                    break
+            if matched is None and city in city_coords:
+                matched = (city, city_coords[city])
+            if matched is not None:
+                _cname, (lat, lon) = matched
+                updates.setdefault("latitude", lat)
+                updates.setdefault("longitude", lon)
+                updates.setdefault("elevation", 0)
+                if "location_name" not in updates:
+                    updates["location_name"] = _cname
+
+        # Normalize numeric fields
+        for num_key in ("latitude", "longitude", "elevation"):
+            if num_key in updates:
+                try:
+                    updates[num_key] = float(updates[num_key])
+                except (TypeError, ValueError):
+                    return {
+                        "status": "failed",
+                        "error": f"invalid_{num_key}",
+                        "value": updates[num_key],
+                    }
+
+        if not updates:
+            return {
+                "status": "failed",
+                "error": "nothing_to_correct",
+                "hint": "pass preset=china and/or city/lat/lon/time_zone",
+            }
+
+        try:
+            updater = getattr(hass.config, "async_update", None)
+            if callable(updater):
+                await updater(**updates)
+            else:
+                sync_upd = getattr(hass.config, "update", None)
+                if callable(sync_upd):
+                    sync_upd(**updates)
+                else:
+                    return {
+                        "status": "failed",
+                        "error": "config_update_unsupported",
+                        "hint": "HA core too old for programmatic config update",
+                    }
+        except Exception as exc:  # noqa: BLE001
+            return {"status": "failed", "error": str(exc), "attempted": updates}
+
+        after = {
+            "location_name": hass.config.location_name,
+            "time_zone": hass.config.time_zone,
+            "language": getattr(hass.config, "language", None),
+            "latitude": hass.config.latitude,
+            "longitude": hass.config.longitude,
+            "elevation": hass.config.elevation,
+        }
+        changed = [k for k in updates if before.get(k) != after.get(k)]
+        return {
+            "status": "ok",
+            "preset": preset,
+            "updated": list(updates.keys()),
+            "changed": changed,
+            "before": before,
+            "after": after,
+            "city_matched": city or None,
+        }
+
     if action == "analytics_get":
         # Prefer on-disk preferences; no stable public write API → read-only probe.
         import json

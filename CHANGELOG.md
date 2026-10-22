@@ -1,5 +1,10 @@
 # Changelog — UDHub Agent
 
+## 0.5.38
+
+- `ha_system.correct_locale`：一键校正时区/语言/位置（中国预设 Asia/Shanghai + zh-Hans；按项目城市离线匹配经纬度）
+- catalog_version 17
+
 ## 0.5.25
 
 - 显示名统一为 **UDHub Agent**；打包并上传 icon/logo（`/agent/icon.png`、`/agent/logo.png`）
