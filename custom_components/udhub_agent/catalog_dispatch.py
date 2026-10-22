@@ -565,6 +565,94 @@ async def _change_ha_login_password(
     }
 
 
+
+def _local_credential_for_user(user: Any) -> Any | None:
+    """Return homeassistant auth credential linked to user, if any."""
+    for cred in getattr(user, "credentials", None) or []:
+        if getattr(cred, "auth_provider_type", None) == "homeassistant":
+            return cred
+    return None
+
+
+async def _change_ha_login_username(
+    hass: HomeAssistant,
+    *,
+    user_id: str | None,
+    new_username: str,
+) -> dict[str, Any]:
+    new_name = str(new_username or "").strip()
+    if not new_name:
+        return {"status": "failed", "error": "missing_new_username"}
+    if " " in new_name:
+        return {
+            "status": "failed",
+            "error": "username_invalid",
+            "hint": "Login username cannot contain spaces",
+        }
+
+    provider = await _hass_auth_provider(hass)
+    if provider is None:
+        return {
+            "status": "failed",
+            "error": "homeassistant_auth_provider_missing",
+            "hint": "Only local Home Assistant users support username change",
+        }
+
+    target_user_id = (user_id or "").strip() or None
+    if not target_user_id:
+        return {"status": "failed", "error": "missing_user_id"}
+
+    users = await hass.auth.async_get_users()
+    target = next((u for u in users if u.id == target_user_id), None)
+    if not target:
+        return {"status": "failed", "error": "user_not_found"}
+
+    cred = _local_credential_for_user(target)
+    if cred is None:
+        return {
+            "status": "failed",
+            "error": "no_local_username",
+            "hint": "User has no homeassistant login credential",
+        }
+
+    old_username = None
+    data = getattr(cred, "data", None) or {}
+    if data.get("username"):
+        old_username = str(data.get("username"))
+
+    if old_username and old_username.strip().casefold() == new_name.casefold():
+        return {
+            "status": "ok",
+            "user_id": target_user_id,
+            "username": old_username,
+            "username_changed": False,
+            "hint": "unchanged",
+        }
+
+    try:
+        await provider.async_change_username(cred, new_name)
+    except Exception as exc:  # noqa: BLE001
+        err_name = type(exc).__name__
+        msg = str(exc).lower()
+        if "InvalidUsername" in err_name or "already" in msg:
+            return {
+                "status": "failed",
+                "error": "username_invalid_or_taken",
+                "detail": str(exc),
+            }
+        if "InvalidUser" in err_name:
+            return {"status": "failed", "error": "auth_user_not_found"}
+        return {"status": "failed", "error": str(exc)}
+
+    return {
+        "status": "ok",
+        "user_id": target_user_id,
+        "previous_username": old_username,
+        "username": new_name,
+        "username_changed": True,
+    }
+
+
 async def _user(hass: HomeAssistant, action: str, payload: dict[str, Any]) -> dict[str, Any]:
     if action == "list":
         users = await hass.auth.async_get_users()
@@ -637,6 +725,16 @@ async def _user(hass: HomeAssistant, action: str, payload: dict[str, Any]) -> di
             return {"status": "denied", "error": "cannot_delete_owner"}
         await hass.auth.async_remove_user(target)
         return {"status": "ok", "user_id": user_id}
+    if action == "change_username":
+        return await _change_ha_login_username(
+            hass,
+            user_id=str(payload.get("user_id") or "") or None,
+            new_username=str(
+                payload.get("new_username")
+                or payload.get("username")
+                or ""
+            ),
+        )
     if action == "change_password":
         return await _change_ha_login_password(
             hass,
@@ -655,9 +753,16 @@ async def _user(hass: HomeAssistant, action: str, payload: dict[str, Any]) -> di
         name = payload.get("name")
         group_ids = payload.get("group_ids")
         password = payload.get("password") or payload.get("new_password")
-        if name is None and group_ids is None and not password:
+        new_username = payload.get("new_username")
+        if (
+            name is None
+            and group_ids is None
+            and not password
+            and new_username is None
+        ):
             return {"status": "failed", "error": "nothing_to_update"}
         changed = False
+        username_changed = False
         if name is not None and str(name).strip():
             target.name = str(name).strip()
             changed = True
@@ -667,6 +772,16 @@ async def _user(hass: HomeAssistant, action: str, payload: dict[str, Any]) -> di
             if len(resolved) != len(set(map(str, group_ids))):
                 return {"status": "failed", "error": "unknown_group"}
             target.groups = resolved
+            changed = True
+        if new_username is not None:
+            un_result = await _change_ha_login_username(
+                hass,
+                user_id=str(user_id),
+                new_username=str(new_username),
+            )
+            if un_result.get("status") != "ok":
+                return un_result
+            username_changed = bool(un_result.get("username_changed"))
             changed = True
         if password:
             pw_result = await _change_ha_login_password(
@@ -687,7 +802,9 @@ async def _user(hass: HomeAssistant, action: str, payload: dict[str, Any]) -> di
             "status": "ok",
             "user_id": user_id,
             "name": target.name,
+            "username": _local_username_for_user(target),
             "password_changed": bool(password),
+            "username_changed": username_changed,
         }
     return {"status": "failed", "error": "unsupported_action"}
 
