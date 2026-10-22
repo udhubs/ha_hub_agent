@@ -34,6 +34,8 @@ async def dispatch(hass: HomeAssistant, action: str, payload: dict[str, Any]) ->
         return await link_probe(hass, payload)
     if action in ("post_upgrade", "post_upgrade_health"):
         return await post_upgrade_health(hass, payload)
+    if action in ("host_health", "host"):
+        return await host_health(hass, payload)
     return {"status": "failed", "error": "unsupported_action", "action": action}
 
 
@@ -481,4 +483,87 @@ async def post_upgrade_health(hass: HomeAssistant, payload: dict[str, Any]) -> d
         "checks": sorted(wanted_set),
         **results,
         "notes": notes,
+    }
+
+
+async def host_health(hass: HomeAssistant, _payload: dict[str, Any]) -> dict[str, Any]:
+    """One-shot host health center snapshot for SaaS console."""
+    from homeassistant.const import __version__ as core_version
+
+    from .const import AGENT_VERSION
+    from .device_registry_fields import probe_ha_features
+    from .host_metrics import collect_host_metrics
+
+    metrics = await collect_host_metrics(hass)
+    features = probe_ha_features(hass, str(core_version))
+
+    state_counts: dict[str, int] = {}
+    failed_entries: list[dict[str, Any]] = []
+    loaded = 0
+    for e in hass.config_entries.async_entries():
+        state = getattr(e, "state", None)
+        state_s = str(getattr(state, "value", state) or "unknown")
+        state_counts[state_s] = state_counts.get(state_s, 0) + 1
+        if state_s == "loaded":
+            loaded += 1
+        if state_s in ("setup_error", "setup_retry", "migration_error", "failed_unload"):
+            reason = getattr(e, "reason", None)
+            failed_entries.append(
+                {
+                    "entry_id": e.entry_id,
+                    "domain": e.domain,
+                    "title": getattr(e, "title", None) or e.domain,
+                    "state": state_s,
+                    "reason": str(reason) if reason else None,
+                }
+            )
+
+    install_type = None
+    try:
+        from homeassistant.helpers.system_info import async_get_system_info
+
+        info = await async_get_system_info(hass)
+        if isinstance(info, dict):
+            install_type = info.get("installation_type") or info.get("install_type")
+    except Exception:
+        _LOGGER.debug("UDHUB host_health system_info unavailable", exc_info=True)
+
+    warnings: list[str] = []
+    if metrics.get("supported") is False:
+        warnings.append("主机资源指标不可用（当前安装形态不支持或 Supervisor 未就绪）")
+    cpu = metrics.get("cpu_percent")
+    mem = metrics.get("memory_percent")
+    disk = metrics.get("disk_percent")
+    if isinstance(cpu, (int, float)) and cpu >= 90:
+        warnings.append(f"CPU 过高：{cpu}%")
+    if isinstance(mem, (int, float)) and mem >= 90:
+        warnings.append(f"内存过高：{mem}%")
+    if isinstance(disk, (int, float)) and disk >= 85:
+        warnings.append(f"磁盘偏满：{disk}%")
+    if failed_entries:
+        warnings.append(f"异常集成 {len(failed_entries)} 个")
+
+    healthy = len(failed_entries) == 0 and not any(
+        isinstance(v, (int, float)) and v >= 90 for v in (cpu, mem)
+    ) and not (isinstance(disk, (int, float)) and disk >= 85)
+
+    return {
+        "status": "ok",
+        "ok": healthy,
+        "collected_at": hass.loop.time() if hasattr(hass, "loop") else None,
+        "versions": {
+            "ha_core": str(core_version),
+            "agent": AGENT_VERSION,
+            "install_type": install_type,
+        },
+        "host_metrics": metrics,
+        "ha_features": features,
+        "integrations": {
+            "total": sum(state_counts.values()),
+            "loaded": loaded,
+            "failed": len(failed_entries),
+            "state_counts": state_counts,
+            "failed_entries": failed_entries[:30],
+        },
+        "warnings": warnings,
     }
